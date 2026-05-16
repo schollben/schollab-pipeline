@@ -132,13 +132,24 @@ def register_bulk(sessions_to_run, process_selections):
 		n_procs = 0
 
 		if process_selections[0, i]:
-			for stale_h5 in ['unregistered.h5', 'registered.h5']:
-				stale_path = os.path.join(sessions_to_run[i], stale_h5)
-				if os.path.exists(stale_path):
-					os.remove(stale_path)
-					print(f"Deleted stale file: {stale_path}")
-			h5_name = os.path.join(sessions_to_run[i], 'unregistered.h5')
-			tif_stacks_to_h5(sessions_to_run[i], h5_name, frame_offset=False)
+			# Verify source TIFs exist BEFORE deleting anything.
+			# Deleting registered.h5 first and then failing on missing TIFs
+			# would permanently destroy the only copy of the registered data.
+			source_tifs = [
+				f for f in glob.glob(os.path.join(sessions_to_run[i], "*.tif"))
+				if 'References' not in f
+			]
+			if not source_tifs:
+				print(f"WARNING: No source TIFs found in {sessions_to_run[i]}")
+				print(f"  Skipping TIFs→H5 step — registered.h5 left untouched.")
+			else:
+				for stale_h5 in ['unregistered.h5', 'registered.h5']:
+					stale_path = os.path.join(sessions_to_run[i], stale_h5)
+					if os.path.exists(stale_path):
+						os.remove(stale_path)
+						print(f"Deleted stale file: {stale_path}")
+				h5_name = os.path.join(sessions_to_run[i], 'unregistered.h5')
+				tif_stacks_to_h5(sessions_to_run[i], h5_name, frame_offset=False)
 
 		if process_selections[1, i]:
 			n_procs += 1
