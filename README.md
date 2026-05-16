@@ -22,8 +22,8 @@ schollab-pipeline/
 │   └── scan_sessions.py     Audit recording sessions before running
 ├── pipeline_worker.py       Headless per-folder caiman → FAST loop
 ├── pipeline.sh              Launcher: setup + GUI + status/attach/stop
-├── caiman_env.yml           CaImAn conda environment spec
-└── fast_requirements.txt    FAST pip requirements
+├── caiman_conda_env.yml     CaImAn conda environment spec
+└── fast_pip_requirements.txt  FAST pip requirements
 ```
 
 ## Environments
@@ -37,8 +37,8 @@ Two conda environments — kept separate due to dependency conflicts:
 
 Set up:
 ```bash
-conda env create -f caiman_env.yml
-pip install -r fast_requirements.txt  # inside FAST env
+conda env create -f caiman_conda_env.yml
+pip install -r fast_pip_requirements.txt  # inside FAST env
 ```
 
 ## Running the pipeline
