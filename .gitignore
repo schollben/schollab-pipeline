@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environments
+.env
+.venv
+env/
+
+# CaImAn intermediate files
+*.mmap
+caiman_temp/
+
+# FAST pipeline outputs (live on server, not in repo)
+fast/logs/
+fast/data/train/*.tif
+fast/data/train/*.tiff
+
+# Temp job/config files written at runtime
+/tmp/pipeline_job.json
+/tmp/fast_cfg_*.json
+
+# Editor / OS
+.DS_Store
+.vscode/
+*.swp
+*.swo
