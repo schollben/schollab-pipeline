@@ -39,10 +39,14 @@ def goTraining(args):
     val_set = ReadDatasets(dataPath=args.val_folder if args.withGT else args.train_folder, dataType=args.data_type,
                            dataExtension=args.data_extension, mode='val', denoising_strategy=args.denoising_strategy)
 
+    # Use 'spawn' instead of the Linux default 'fork' to prevent CUDA context
+    # deadlocks when running under systemd (fork inherits parent CUDA state)
     train_loader = DataLoader(dataset=train_set, batch_size=args.batch_size, drop_last=True,
-                              num_workers=args.num_workers, pin_memory=True)
-    val_loader = DataLoader(dataset=val_set, batch_size=args.batch_size, drop_last=True, num_workers=args.num_workers,
-                            pin_memory=True)
+                              num_workers=args.num_workers, pin_memory=True,
+                              multiprocessing_context='spawn')
+    val_loader = DataLoader(dataset=val_set, batch_size=args.batch_size, drop_last=True,
+                            num_workers=args.num_workers, pin_memory=True,
+                            multiprocessing_context='spawn')
 
     # Define checkpoint directory in the dataset folder (parent of train_folder)
     # Use results_dir so checkpoint lands on the permanent drive, not tmpfs scratch
