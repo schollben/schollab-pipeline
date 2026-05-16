@@ -76,6 +76,37 @@ _clean_caiman() {
 	echo "════════════════════════════════════════════════════════"
 	echo ""
 
+	# Safety check: warn if any folder has registered.h5 but no source TIFs.
+	# registered.h5 is irreplaceable if the original TIFs have been deleted.
+	if $CONFIRM; then
+		UNSAFE_FOLDERS=()
+		while IFS= read -r folder; do
+			folder="${folder%/}"
+			if [ -f "$folder/registered.h5" ]; then
+				tif_count=$(find "$folder" -maxdepth 1 -name "*.tif" 2>/dev/null | grep -v References | wc -l)
+				if [ "$tif_count" -eq 0 ]; then
+					UNSAFE_FOLDERS+=("$folder")
+				fi
+			fi
+		done <<< "$FOLDERS"
+
+		if [ "${#UNSAFE_FOLDERS[@]}" -gt 0 ]; then
+			echo "WARNING: The following folders have registered.h5 but NO source TIFs."
+			echo "  Deleting registered.h5 here is PERMANENT — the data cannot be recovered."
+			echo ""
+			for f in "${UNSAFE_FOLDERS[@]}"; do
+				echo "  $f"
+			done
+			echo ""
+			read -r -p "Type 'yes' to confirm permanent deletion, or anything else to abort: " ans
+			if [ "$ans" != "yes" ]; then
+				echo "Aborted."
+				exit 1
+			fi
+			echo ""
+		fi
+	fi
+
 	while IFS= read -r folder; do
 		folder="${folder%/}"
 		echo "Folder: $folder"
