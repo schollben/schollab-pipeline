@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# clean_run.sh
+# clean.sh
 # Wipes all pipeline artifacts so the next run starts completely fresh.
 #
 # Deletes per-folder (permanent drive):
@@ -20,8 +20,8 @@
 #   logs/ram_stats.txt
 #
 # Usage:
-#   bash clean_run.sh              # dry run — shows what would be deleted
-#   bash clean_run.sh --confirm    # actually deletes
+#   bash clean.sh              # dry run — shows what would be deleted
+#   bash clean.sh --confirm    # actually deletes
 
 set -euo pipefail
 

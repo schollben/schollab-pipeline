@@ -81,7 +81,7 @@ def load_pipeline_config(path: str) -> dict:
 	"""
 	Load pipeline orchestration config from JSON.
 
-	Separates folder list and runtime parameters from code so main.py
+	Separates folder list and runtime parameters from code so denoising.py
 	never needs to be edited for routine runs — only pipeline_config.json does.
 	"""
 	if not os.path.exists(path):
@@ -642,11 +642,11 @@ def process_folder(
 
 def main():
 	# Accept optional --config argument so different config files can be used
-	# without modifying this script: python main.py --config my_config.json
+	# without modifying this script: python denoising.py --config my_config.json
 	parser = argparse.ArgumentParser(description='FAST denoising pipeline')
 	parser.add_argument(
 		'--config', default=PIPELINE_CONFIG_PATH,
-		help='Path to pipeline_config.json (default: same dir as main.py)'
+		help='Path to pipeline_config.json (default: same dir as denoising.py)'
 	)
 	cli = parser.parse_args()
 
