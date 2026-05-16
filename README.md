@@ -14,7 +14,6 @@ schollab-pipeline/
 ├── fast/                    FAST denoising
 │   ├── denoising.py         Entry point: reads pipeline_config.json
 │   ├── pipeline_config.json Data folders + hyperparameters
-│   ├── clean.sh             Wipe artifacts for a fresh run
 │   ├── datasets/            PyTorch dataset + augmentation
 │   ├── models/              U-Net architecture
 │   └── utils/               H5/TIFF utilities, config loader
@@ -44,10 +43,18 @@ pip install -r fast_pip_requirements.txt  # inside FAST env
 ## Running the pipeline
 
 ```bash
-bash pipeline.sh              # opens GUI to select folders, then launches pipeline
-bash pipeline.sh --attach     # follow live output
-bash pipeline.sh --status     # show service status + last log lines
-bash pipeline.sh --stop       # stop a running pipeline
+bash pipeline.sh                        # open GUI, launch pipeline
+bash pipeline.sh --attach               # follow live output
+bash pipeline.sh --status               # service status + last log lines
+bash pipeline.sh --stop                 # stop a running pipeline
+
+# Cleanup
+bash pipeline.sh --clean_caiman         # dry run: show caiman artifacts
+bash pipeline.sh --clean_caiman --confirm   # delete caiman artifacts
+bash pipeline.sh --clean_fast           # dry run: show FAST artifacts
+bash pipeline.sh --clean_fast --confirm     # delete FAST artifacts
+bash pipeline.sh --clean_all            # dry run: show all artifacts
+bash pipeline.sh --clean_all --confirm      # delete everything
 ```
 
 The pipeline runs as a systemd user service — it survives display/GDM crashes.
