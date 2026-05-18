@@ -167,6 +167,19 @@ def register_bulk(sessions_to_run, process_selections):
 				save_sample=True, sample_name=f"{n_procs:02}_nonrigid.tif")
 			n_procs += 1
 
+		# TIFs→H5 leaves unregistered.h5; only motion steps produce registered.h5.
+		# If the user checked TIF conversion but none of the motion columns, FAST will
+		# have nothing to read — warn here so journalctl shows the real cause.
+		if process_selections[0, i] and not any(process_selections[1:4, i]):
+			unreg = os.path.join(sessions_to_run[i], 'unregistered.h5')
+			reg   = os.path.join(sessions_to_run[i], 'registered.h5')
+			if os.path.isfile(unreg) and not os.path.isfile(reg):
+				print(
+					"WARNING: TIFs→H5 wrote unregistered.h5 but no motion step was selected.\n"
+					"  Enable at least one of: First Rigid, Addl. Rigid, or NoRMCorre — "
+					"otherwise registered.h5 is never created and FAST will skip this folder."
+				)
+
 
 if __name__ == '__main__':
 	# Get folder selections from the GUI — returns (paths array, 4×N bool array)

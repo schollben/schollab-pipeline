@@ -109,6 +109,16 @@ def main():
 			print(f"  Skipping FAST for this folder and continuing.")
 			continue
 
+		# FAST consumes registered.h5 from CaImAn. TIFs→H5 alone only makes unregistered.h5.
+		registered_h5 = os.path.join(folder, 'registered.h5')
+		if not os.path.isfile(registered_h5):
+			print(
+				"  [FAST] Skipping — registered.h5 not found.\n"
+				"  If you used TIFs→.H5, also check at least one motion step "
+				"(First Rigid, Addl. Rigid, or NoRMCorre) so CaImAn writes registered.h5."
+			)
+			continue
+
 		# Step 2: FAST denoising — reads registered.h5 written by caiman
 		run_fast_on_folder(folder, base_cfg, i)
 

@@ -56,7 +56,9 @@ class CheckListFrame(wx.Frame):
             # Add checkboxes for each column
             for col in range(self.check_cols):
                 checkbox = wx.CheckBox(self.panel)
-                if col == 0:  # First column checked by default
+                # Default TIFs->.H5 + First Rigid so motion correction runs and produces
+                # registered.h5 for FAST when the user accepts defaults without extra clicks.
+                if col in (0, 1):
                     checkbox.SetValue(True)
                 self.checkboxes[col].append(checkbox)
                 grid_sizer.Add(checkbox, pos=(row, col+1), 

@@ -13,6 +13,7 @@
 #   bash pipeline.sh --clean_fast --confirm    # delete FAST artifacts
 #   bash pipeline.sh --clean_all           # dry run: show all artifacts
 #   bash pipeline.sh --clean_all --confirm     # delete everything
+#   bash pipeline.sh --setup                # conda envs (caiman + FAST), linger, scratch tmpfs
 
 set -euo pipefail
 
@@ -20,6 +21,9 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_NAME="schollab-pipeline"
 FAST_LOG_DIR="$REPO_DIR/fast/logs"
 FAST_CONFIG="$REPO_DIR/fast/pipeline_config.json"
+
+# Miniforge/conda — must match paths in caiman/registration.py and workers/pipeline_worker.py
+CONDA_BIN="${CONDA_BIN:-$HOME/miniforge3/bin/conda}"
 
 # FAST scratch tmpfs size (edit for your machine — must fit in RAM)
 SCRATCH_TMPFS_SIZE="50G"
@@ -37,6 +41,7 @@ for arg in "$@"; do
 		--attach)       MODE="attach"        ;;
 		--status)       MODE="status"        ;;
 		--stop)         MODE="stop"          ;;
+		--setup)        MODE="setup"         ;;
 		--clean_caiman) MODE="clean_caiman"  ;;
 		--clean_fast)   MODE="clean_fast"    ;;
 		--clean_all)    MODE="clean_all"     ;;
@@ -146,6 +151,69 @@ _ensure_scratch_tmpfs() {
 	fi
 	rm -f "$tfile"
 	echo "  Scratch (tmpfs): $SCRATCH_DIR mounted and writable"
+}
+
+# Require Miniforge/conda on disk (no auto-install).
+_conda_bin_or_die() {
+	if [ ! -x "$CONDA_BIN" ]; then
+		echo "ERROR: conda not found or not executable: $CONDA_BIN"
+		echo "  Install Miniforge: https://github.com/conda-forge/miniforge"
+		echo "  Or set CONDA_BIN to your conda executable and re-run."
+		exit 1
+	fi
+}
+
+# Create/update caiman from yml; create FAST if missing; pip install FAST deps.
+_setup_conda_envs() {
+	local yml req
+	yml="$REPO_DIR/caiman_conda_env.yml"
+	req="$REPO_DIR/fast_pip_requirements.txt"
+	if [ ! -f "$yml" ]; then
+		echo "ERROR: $yml not found"
+		exit 1
+	fi
+	if [ ! -f "$req" ]; then
+		echo "ERROR: $req not found"
+		exit 1
+	fi
+
+	echo "── Conda: caiman env ─────────────────────────────────"
+	if [ -d "$HOME/miniforge3/envs/caiman" ]; then
+		echo "  Updating existing env 'caiman' from caiman_conda_env.yml ..."
+		"$CONDA_BIN" env update -f "$yml" --prune
+	else
+		echo "  Creating env 'caiman' from caiman_conda_env.yml ..."
+		"$CONDA_BIN" env create -f "$yml"
+	fi
+
+	echo "── Conda: FAST env ────────────────────────────────────"
+	if [ ! -d "$HOME/miniforge3/envs/FAST" ]; then
+		echo "  Creating env 'FAST' (python 3.11) ..."
+		"$CONDA_BIN" create -n FAST python=3.11 -y
+	else
+		echo "  Env 'FAST' already exists; skipping conda create."
+	fi
+	echo "  pip install (FAST env) from fast_pip_requirements.txt ..."
+	"$CONDA_BIN" run -n FAST pip install -r "$req"
+}
+
+# One-shot / refresh: envs, linger, log dir, scratch tmpfs (sudo at end).
+_setup_run() {
+	echo "Schollab pipeline — setup (conda envs + scratch)"
+	echo "  Repo:      $REPO_DIR"
+	echo "  Conda:     $CONDA_BIN"
+	echo ""
+	_conda_bin_or_die
+	_setup_conda_envs
+	echo ""
+	echo "── User systemd linger ────────────────────────────────"
+	loginctl enable-linger "$USER"
+	echo ""
+	mkdir -p "$FAST_LOG_DIR"
+	echo "── FAST scratch tmpfs ─────────────────────────────────"
+	_ensure_scratch_tmpfs
+	echo ""
+	echo "Setup complete. Next: bash pipeline.sh"
 }
 
 # ── clean_caiman: remove caiman registration artifacts ────────────────────────
@@ -307,6 +375,13 @@ if [ "$MODE" = "stop" ]; then
 	systemctl --user stop "$UNIT_NAME" 2>/dev/null \
 		&& echo "Pipeline stopped." \
 		|| echo "Pipeline was not running."
+	exit 0
+fi
+
+# ── setup mode ───────────────────────────────────────────────────────────────
+
+if [ "$MODE" = "setup" ]; then
+	_setup_run
 	exit 0
 fi
 

@@ -21,12 +21,14 @@ schollab-pipeline/
 │   └── scan_sessions.py     Audit recording sessions before running
 ├── workers/
 │   └── pipeline_worker.py    Headless per-folder caiman→FAST (systemd only)
-├── pipeline.sh              Launcher: setup + GUI + status/attach/stop
+├── pipeline.sh              Launcher: --setup, GUI + status/attach/stop + clean
 ├── caiman_conda_env.yml     CaImAn conda environment spec
 └── fast_pip_requirements.txt  FAST pip requirements
 ```
 
 ## Environments
+
+**Prerequisite:** [Miniforge](https://github.com/conda-forge/miniforge) (or conda) at `~/miniforge3` so `~/miniforge3/bin/conda` exists — or set **`CONDA_BIN`** to your `conda` executable when calling `pipeline.sh`.
 
 Two conda environments — kept separate due to dependency conflicts:
 
@@ -35,15 +37,23 @@ Two conda environments — kept separate due to dependency conflicts:
 | `caiman` | Motion correction | `~/miniforge3/envs/caiman/bin/python` |
 | `FAST` | Denoising | `~/miniforge3/envs/FAST/bin/python` |
 
-Set up:
+**Preferred setup** (creates/updates both envs, enables systemd linger, creates log dir, configures scratch tmpfs — may prompt for **sudo** at the end):
+
 ```bash
-conda env create -f caiman_conda_env.yml
-pip install -r fast_pip_requirements.txt  # inside FAST env
+bash pipeline.sh --setup
+```
+
+Manual fallback (equivalent ingredients):
+
+```bash
+conda env create -f caiman_conda_env.yml   # or: conda env update -f caiman_conda_env.yml --prune
+conda create -n FAST python=3.11 -y        # once
+conda run -n FAST pip install -r fast_pip_requirements.txt
 ```
 
 ### FAST scratch directory (`scratch_dir` in `pipeline_config.json`)
 
-FAST uses `scratch_dir` (often `/mnt/fast_tmp`) for fast intermediate I/O. On the first `bash pipeline.sh` run, the script prompts for **sudo** to:
+FAST uses `scratch_dir` (often `/mnt/fast_tmp`) for fast intermediate I/O. On **`bash pipeline.sh --setup`** or the first normal **`bash pipeline.sh`** run, the script prompts for **sudo** to:
 
 - create the mount point directory,
 - append a **tmpfs** line to `/etc/fstab` (if not already present),
@@ -53,7 +63,10 @@ Tune the RAM cap by editing `SCRATCH_TMPFS_SIZE` at the top of `pipeline.sh` (de
 
 ## Running the pipeline
 
+The registration GUI pre-checks **TIFs→.H5** and **First Rigid** by default for each folder so motion correction runs and `registered.h5` exists for FAST if you leave defaults; adjust the columns per folder as needed.
+
 ```bash
+bash pipeline.sh --setup                 # conda envs + linger + scratch tmpfs (new machine)
 bash pipeline.sh                        # open GUI, launch pipeline
 bash pipeline.sh --attach               # follow live output
 bash pipeline.sh --status               # service status + last log lines
