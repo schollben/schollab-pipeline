@@ -19,7 +19,8 @@ schollab-pipeline/
 │   └── utils/               H5/TIFF utilities, config loader
 ├── tools/
 │   └── scan_sessions.py     Audit recording sessions before running
-├── pipeline_worker.py       Headless per-folder caiman → FAST loop
+├── workers/
+│   └── pipeline_worker.py    Headless per-folder caiman→FAST (systemd only)
 ├── pipeline.sh              Launcher: setup + GUI + status/attach/stop
 ├── caiman_conda_env.yml     CaImAn conda environment spec
 └── fast_pip_requirements.txt  FAST pip requirements

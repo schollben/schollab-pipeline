@@ -8,20 +8,18 @@ sequentially: caiman motion correction → FAST denoising.
 Launched as a systemd user service by registration.py (via systemd-run),
 so it runs outside the login session cgroup and survives display/GDM crashes.
 
-Usage (normally invoked by registration.py, not run directly):
-    python pipeline_worker.py /tmp/pipeline_job.json
+Usage (normally invoked by registration.py, not run directly). Debug from repo root:
+    python workers/pipeline_worker.py /tmp/pipeline_job.json
 """
 
 import os
 import sys
 import json
 import subprocess
-import pathlib
 import numpy as np
 
-# Add caiman/ to path so register_bulk can be imported directly.
-# pipeline_worker runs under the caiman python env.
-REPO_DIR    = os.path.dirname(os.path.abspath(__file__))
+# Repo root is parent of workers/ — worker moved from repo root so we need two dirnames.
+REPO_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CAIMAN_DIR  = os.path.join(REPO_DIR, 'caiman')
 FAST_DIR    = os.path.join(REPO_DIR, 'fast')
 sys.path.insert(0, CAIMAN_DIR)
@@ -74,7 +72,7 @@ def run_fast_on_folder(folder, base_cfg, folder_idx):
 
 def main():
 	if len(sys.argv) < 2:
-		print("Usage: pipeline_worker.py <job_json_path>")
+		print("Usage: python workers/pipeline_worker.py <job_json_path>")
 		sys.exit(1)
 
 	job_path = sys.argv[1]

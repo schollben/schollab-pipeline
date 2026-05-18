@@ -30,10 +30,10 @@ from tif_to_h5 import tif_stacks_to_h5
 
 global mc
 
-# Paths on the server — pipeline_worker.py runs under the caiman env and
+# Paths on the server — workers/pipeline_worker.py runs under the caiman env and
 # calls the FAST step via subprocess using FAST_PYTHON
 REPO_DIR      = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WORKER_SCRIPT = os.path.join(REPO_DIR, 'pipeline_worker.py')
+WORKER_SCRIPT = os.path.join(REPO_DIR, 'workers', 'pipeline_worker.py')
 CAIMAN_PYTHON = os.path.join(os.path.expanduser('~'), 'miniforge3', 'envs', 'caiman', 'bin', 'python')
 UNIT_NAME     = 'schollab-pipeline'
 JOB_PATH      = '/tmp/pipeline_job.json'
@@ -175,7 +175,7 @@ if __name__ == '__main__':
 		print("No folders selected. Exiting.")
 		sys.exit(0)
 
-	# Write job file consumed by pipeline_worker.py.
+	# Write job file consumed by workers/pipeline_worker.py.
 	# Keeping this as a plain JSON file means any alternative launcher
 	# (CLI, web UI, etc.) can produce the same file to trigger the pipeline.
 	job = {
@@ -192,7 +192,7 @@ if __name__ == '__main__':
 		check=False
 	)
 
-	# Launch pipeline_worker.py as a persistent systemd user service.
+	# Launch workers/pipeline_worker.py as a persistent systemd user service.
 	# Runs under the caiman python env; worker calls FAST via subprocess.
 	# loginctl enable-linger must already be set (done by pipeline.sh).
 	subprocess.run([
