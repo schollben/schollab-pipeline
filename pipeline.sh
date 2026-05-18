@@ -21,6 +21,9 @@ UNIT_NAME="schollab-pipeline"
 FAST_LOG_DIR="$REPO_DIR/fast/logs"
 FAST_CONFIG="$REPO_DIR/fast/pipeline_config.json"
 
+# FAST scratch tmpfs size (edit for your machine — must fit in RAM)
+SCRATCH_TMPFS_SIZE="50G"
+
 CAIMAN_PYTHON="$HOME/miniforge3/envs/caiman/bin/python"
 REGISTRATION_SCRIPT="$REPO_DIR/caiman/registration.py"
 
@@ -63,6 +66,86 @@ _delete() {
 			echo "  [DRY-RUN] would delete: $target"
 		fi
 	fi
+}
+
+# Returns 0 if /etc/fstab already has this mount point as field 2
+_fstab_has_scratch_mount() {
+	local mp="$1"
+	awk -v "mp=$mp" '
+		/^[[:space:]]*#/ { next }
+		NF < 2 { next }
+		$2 == mp { found = 1 }
+		END { exit found ? 0 : 1 }
+	' /etc/fstab 2>/dev/null
+}
+
+# Ensure scratch_dir from pipeline_config.json is a mounted tmpfs (creates dir,
+# appends /etc/fstab once, mounts). Refuses to overlay tmpfs on a non-empty
+# directory that is not already the mount point — avoids hiding existing data.
+_ensure_scratch_tmpfs() {
+	if [ ! -f "$FAST_CONFIG" ]; then
+		echo "ERROR: pipeline_config.json not found at $FAST_CONFIG"
+		exit 1
+	fi
+	local SCRATCH_DIR
+	SCRATCH_DIR=$(python3 -c "import json; print(json.load(open('$FAST_CONFIG'))['scratch_dir'])")
+
+	if mountpoint -q "$SCRATCH_DIR" 2>/dev/null; then
+		if [ ! -w "$SCRATCH_DIR" ]; then
+			echo "ERROR: scratch_dir is mounted but not writable: $SCRATCH_DIR"
+			exit 1
+		fi
+		echo "  Scratch (tmpfs): $SCRATCH_DIR (already mounted)"
+		return 0
+	fi
+
+	if [ -d "$SCRATCH_DIR" ] && [ -n "$(ls -A "$SCRATCH_DIR" 2>/dev/null)" ]; then
+		echo "ERROR: scratch_dir exists, is not mounted, and is not empty:"
+		echo "  $SCRATCH_DIR"
+		echo "  Empty it or pick a different scratch_dir in pipeline_config.json"
+		echo "  before mounting tmpfs (would hide existing files)."
+		exit 1
+	fi
+
+	echo "  Configuring FAST scratch tmpfs at $SCRATCH_DIR (sudo required once)..."
+
+	_sudo_or_die() {
+		if ! sudo "$@"; then
+			echo ""
+			echo "ERROR: sudo failed. Configure manually, then re-run pipeline.sh:"
+			echo "  sudo mkdir -p $SCRATCH_DIR"
+			echo "  Add to /etc/fstab:"
+			echo "    tmpfs	${SCRATCH_DIR}	tmpfs	defaults,size=${SCRATCH_TMPFS_SIZE},mode=0777	0	0"
+			echo "  sudo mount ${SCRATCH_DIR}"
+			exit 1
+		fi
+	}
+
+	_sudo_or_die mkdir -p "$SCRATCH_DIR"
+
+	if ! _fstab_has_scratch_mount "$SCRATCH_DIR"; then
+		{
+			echo ""
+			echo "# schollab-pipeline FAST scratch (tmpfs)"
+			echo "tmpfs	${SCRATCH_DIR}	tmpfs	defaults,size=${SCRATCH_TMPFS_SIZE},mode=0777	0	0"
+		} | _sudo_or_die tee -a /etc/fstab >/dev/null
+	fi
+
+	_sudo_or_die mount "$SCRATCH_DIR"
+
+	if ! mountpoint -q "$SCRATCH_DIR" 2>/dev/null; then
+		echo "ERROR: $SCRATCH_DIR is not a mountpoint after 'sudo mount'. Check /etc/fstab and syslog."
+		exit 1
+	fi
+
+	local tfile
+	tfile="$SCRATCH_DIR/.schollab_scratch_writable_test.$$"
+	if ! touch "$tfile" 2>/dev/null; then
+		echo "ERROR: scratch_dir is not writable after mount: $SCRATCH_DIR"
+		exit 1
+	fi
+	rm -f "$tfile"
+	echo "  Scratch (tmpfs): $SCRATCH_DIR mounted and writable"
 }
 
 # ── clean_caiman: remove caiman registration artifacts ────────────────────────
@@ -239,6 +322,8 @@ fi
 loginctl enable-linger "$USER"
 
 mkdir -p "$FAST_LOG_DIR"
+
+_ensure_scratch_tmpfs
 
 echo "Starting Schollab pipeline..."
 echo "  Caiman python: $CAIMAN_PYTHON"

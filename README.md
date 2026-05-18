@@ -40,6 +40,16 @@ conda env create -f caiman_conda_env.yml
 pip install -r fast_pip_requirements.txt  # inside FAST env
 ```
 
+### FAST scratch directory (`scratch_dir` in `pipeline_config.json`)
+
+FAST uses `scratch_dir` (often `/mnt/fast_tmp`) for fast intermediate I/O. On the first `bash pipeline.sh` run, the script prompts for **sudo** to:
+
+- create the mount point directory,
+- append a **tmpfs** line to `/etc/fstab` (if not already present),
+- run `sudo mount` so it matches reboot behavior.
+
+Tune the RAM cap by editing `SCRATCH_TMPFS_SIZE` at the top of `pipeline.sh` (default `50G`). If `scratch_dir` already exists as a **non-empty** directory and is not mounted, the script exits rather than overlay tmpfs and hide files.
+
 ## Running the pipeline
 
 ```bash
