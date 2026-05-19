@@ -26,9 +26,20 @@ sys.path.insert(0, CAIMAN_DIR)
 
 from registration import register_bulk
 
+
+def _schollab_conda_root():
+	"""
+	Directory that contains bin/conda and envs/{caiman,FAST}.
+	Must stay aligned with caiman/registration.py (same env var / default).
+	"""
+	root = os.environ.get('SCHOLLAB_CONDA_ROOT')
+	if root:
+		return os.path.expanduser(root)
+	return os.path.join(os.path.expanduser('~'), 'miniforge3')
+
+
 # Direct python path for FAST env — no conda activation needed.
-# Must match the miniforge3 env on the server.
-FAST_PYTHON     = os.path.join(os.path.expanduser('~'), 'miniforge3', 'envs', 'FAST', 'bin', 'python')
+FAST_PYTHON     = os.path.join(_schollab_conda_root(), 'envs', 'FAST', 'bin', 'python')
 FAST_SCRIPT     = os.path.join(FAST_DIR, 'denoising.py')
 FAST_BASE_CFG   = os.path.join(FAST_DIR, 'pipeline_config.json')
 

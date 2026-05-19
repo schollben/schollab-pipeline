@@ -30,11 +30,22 @@ from tif_to_h5 import tif_stacks_to_h5
 
 global mc
 
+def _schollab_conda_root():
+	"""
+	Directory that contains bin/conda and envs/{caiman,FAST}.
+	Set SCHOLLAB_CONDA_ROOT when conda lives under ~/miniconda3 (or elsewhere).
+	"""
+	root = os.environ.get('SCHOLLAB_CONDA_ROOT')
+	if root:
+		return os.path.expanduser(root)
+	return os.path.join(os.path.expanduser('~'), 'miniforge3')
+
+
 # Paths on the server — workers/pipeline_worker.py runs under the caiman env and
 # calls the FAST step via subprocess using FAST_PYTHON
 REPO_DIR      = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKER_SCRIPT = os.path.join(REPO_DIR, 'workers', 'pipeline_worker.py')
-CAIMAN_PYTHON = os.path.join(os.path.expanduser('~'), 'miniforge3', 'envs', 'caiman', 'bin', 'python')
+CAIMAN_PYTHON = os.path.join(_schollab_conda_root(), 'envs', 'caiman', 'bin', 'python')
 UNIT_NAME     = 'schollab-pipeline'
 JOB_PATH      = '/tmp/pipeline_job.json'
 
@@ -213,6 +224,8 @@ if __name__ == '__main__':
 		f"--unit={UNIT_NAME}",
 		"--description=Schollab caiman+FAST pipeline",
 		f"--setenv=HOME={os.path.expanduser('~')}",
+		# Worker subprocess needs same prefix as GUI so FAST_PYTHON resolves correctly.
+		f"--setenv=SCHOLLAB_CONDA_ROOT={_schollab_conda_root()}",
 		CAIMAN_PYTHON, WORKER_SCRIPT, JOB_PATH
 	], check=True)
 

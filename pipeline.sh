@@ -22,13 +22,15 @@ UNIT_NAME="schollab-pipeline"
 FAST_LOG_DIR="$REPO_DIR/fast/logs"
 FAST_CONFIG="$REPO_DIR/fast/pipeline_config.json"
 
-# Miniforge/conda — must match paths in caiman/registration.py and workers/pipeline_worker.py
-CONDA_BIN="${CONDA_BIN:-$HOME/miniforge3/bin/conda}"
+# Conda install prefix (Miniforge vs Miniconda, etc.). Export SCHOLLAB_CONDA_ROOT on hosts
+# where envs live under e.g. ~/miniconda3 — must match registration.py / pipeline_worker.py.
+SCHOLLAB_CONDA_ROOT="${SCHOLLAB_CONDA_ROOT:-$HOME/miniforge3}"
+CONDA_BIN="${CONDA_BIN:-$SCHOLLAB_CONDA_ROOT/bin/conda}"
 
 # FAST scratch tmpfs size (edit for your machine — must fit in RAM)
 SCRATCH_TMPFS_SIZE="120G"
 
-CAIMAN_PYTHON="$HOME/miniforge3/envs/caiman/bin/python"
+CAIMAN_PYTHON="$SCHOLLAB_CONDA_ROOT/envs/caiman/bin/python"
 REGISTRATION_SCRIPT="$REPO_DIR/caiman/registration.py"
 
 # ── parse args ────────────────────────────────────────────────────────────────
@@ -158,7 +160,7 @@ _conda_bin_or_die() {
 	if [ ! -x "$CONDA_BIN" ]; then
 		echo "ERROR: conda not found or not executable: $CONDA_BIN"
 		echo "  Install Miniforge: https://github.com/conda-forge/miniforge"
-		echo "  Or set CONDA_BIN to your conda executable and re-run."
+		echo "  Or set SCHOLLAB_CONDA_ROOT (install prefix) or CONDA_BIN explicitly and re-run."
 		exit 1
 	fi
 }
@@ -178,7 +180,7 @@ _setup_conda_envs() {
 	fi
 
 	echo "── Conda: caiman env ─────────────────────────────────"
-	if [ -d "$HOME/miniforge3/envs/caiman" ]; then
+	if [ -d "$SCHOLLAB_CONDA_ROOT/envs/caiman" ]; then
 		echo "  Updating existing env 'caiman' from caiman_conda_env.yml ..."
 		"$CONDA_BIN" env update -f "$yml" --prune
 	else
@@ -187,7 +189,7 @@ _setup_conda_envs() {
 	fi
 
 	echo "── Conda: FAST env ────────────────────────────────────"
-	if [ ! -d "$HOME/miniforge3/envs/FAST" ]; then
+	if [ ! -d "$SCHOLLAB_CONDA_ROOT/envs/FAST" ]; then
 		echo "  Creating env 'FAST' (python 3.11) ..."
 		"$CONDA_BIN" create -n FAST python=3.11 -y
 	else
@@ -200,8 +202,9 @@ _setup_conda_envs() {
 # One-shot / refresh: envs, linger, log dir, scratch tmpfs (sudo at end).
 _setup_run() {
 	echo "Schollab pipeline — setup (conda envs + scratch)"
-	echo "  Repo:      $REPO_DIR"
-	echo "  Conda:     $CONDA_BIN"
+	echo "  Repo:            $REPO_DIR"
+	echo "  Conda prefix:    $SCHOLLAB_CONDA_ROOT"
+	echo "  Conda binary:    $CONDA_BIN"
 	echo ""
 	_conda_bin_or_die
 	_setup_conda_envs
@@ -389,7 +392,7 @@ fi
 
 if [ ! -f "$CAIMAN_PYTHON" ]; then
 	echo "ERROR: caiman python not found at $CAIMAN_PYTHON"
-	echo "  Check that the caiman conda env is installed in ~/miniforge3/envs/caiman/"
+	echo "  Install envs (bash pipeline.sh --setup) or set SCHOLLAB_CONDA_ROOT to your conda prefix."
 	exit 1
 fi
 

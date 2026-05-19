@@ -28,14 +28,23 @@ schollab-pipeline/
 
 ## Environments
 
-**Prerequisite:** [Miniforge](https://github.com/conda-forge/miniforge) (or conda) at `~/miniforge3` so `~/miniforge3/bin/conda` exists — or set **`CONDA_BIN`** to your `conda` executable when calling `pipeline.sh`.
+**Prerequisite:** [Miniforge](https://github.com/conda-forge/miniforge), Miniconda, or another conda install whose prefix contains `bin/conda` and `envs/`.
+
+- **Default prefix** is `~/miniforge3` (paths like `$HOME/miniforge3/envs/caiman/bin/python`).
+- On a machine where conda lives under **`~/miniconda3`** (or anywhere else), set:
+
+  ```bash
+  export SCHOLLAB_CONDA_ROOT="$HOME/miniconda3"
+  ```
+
+  before `bash pipeline.sh` / the GUI. `pipeline.sh` derives **`CONDA_BIN`** from `SCHOLLAB_CONDA_ROOT` unless you override **`CONDA_BIN`** directly. The GUI passes **`SCHOLLAB_CONDA_ROOT`** into the systemd worker so FAST uses the same prefix.
 
 Two conda environments — kept separate due to dependency conflicts:
 
-| Env | Used for | Python path |
-|-----|----------|-------------|
-| `caiman` | Motion correction | `~/miniforge3/envs/caiman/bin/python` |
-| `FAST` | Denoising | `~/miniforge3/envs/FAST/bin/python` |
+| Env | Used for | Python path (default prefix) |
+|-----|----------|------------------------------|
+| `caiman` | Motion correction | `$SCHOLLAB_CONDA_ROOT/envs/caiman/bin/python` |
+| `FAST` | Denoising | `$SCHOLLAB_CONDA_ROOT/envs/FAST/bin/python` |
 
 **Preferred setup** (creates/updates both envs, enables systemd linger, creates log dir, configures scratch tmpfs — may prompt for **sudo** at the end):
 
