@@ -26,7 +26,7 @@ FAST_CONFIG="$REPO_DIR/fast/pipeline_config.json"
 CONDA_BIN="${CONDA_BIN:-$HOME/miniforge3/bin/conda}"
 
 # FAST scratch tmpfs size (edit for your machine — must fit in RAM)
-SCRATCH_TMPFS_SIZE="50G"
+SCRATCH_TMPFS_SIZE="120G"
 
 CAIMAN_PYTHON="$HOME/miniforge3/envs/caiman/bin/python"
 REGISTRATION_SCRIPT="$REPO_DIR/caiman/registration.py"
@@ -398,7 +398,8 @@ loginctl enable-linger "$USER"
 
 mkdir -p "$FAST_LOG_DIR"
 
-_ensure_scratch_tmpfs
+# FAST scratch tmpfs — disabled: use disk-backed scratch_dir in pipeline_config.json.
+# _ensure_scratch_tmpfs
 
 echo "Starting Schollab pipeline..."
 echo "  Caiman python: $CAIMAN_PYTHON"
