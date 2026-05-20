@@ -74,15 +74,23 @@ Tune the RAM cap by editing `SCRATCH_TMPFS_SIZE` at the top of `pipeline.sh`. If
 
 ### Cleanup (`--clean_caiman`, `--clean_fast`, `--clean_all`)
 
-Targets come from `data_folders` in [`fast/pipeline_config.json`](fast/pipeline_config.json).
+Each mode **scans disk first**, prints a **single manifest** of paths that exist and would be removed, then exits unless you also pass **`--confirm`**.
 
-| Mode | Removes (per folder) | Does **not** remove |
-|------|----------------------|---------------------|
-| **clean_caiman** | `unregistered.h5`, `registered.h5`, rigid/nonrigid shift CSVs, `*_rigid.tif` / `*_nonrigid.tif` (CaImAn previews) | Raw acquisition TIFFs (`TSeries_*`, `file_*`, etc.) |
-| **clean_fast** | `checkpoint/`, `inference.h5`, `_fast_complete`, `_run_config.json`, `_inference_config.json`, example `*_registered_*.tif` in the folder, scratch subdir named after the folder | Raw TIFFs / CaImAn H5s |
-| **clean_all** | Both of the above | Same |
+- **`--confirm`**: after the manifest, you get a **`Delete N path(s)? [y/N]`** prompt (needs a TTY). **`--yes`** skips that prompt for scripting (unsafe-folder rules still require a TTY and typed `yes` when applicable).
+- **Folder list** (precedence):
+  1. Paths after **`--`**: `bash pipeline.sh --clean_caiman -- /data/session1 /data/session2`
+  2. **`--from-job`**: read `sessions` from **`/tmp/pipeline_job.json`** (GUI job file); override path with env **`JOB_FILE`** if needed.
+  3. Else **`data_folders`** in [`fast/pipeline_config.json`](fast/pipeline_config.json) (a **WARNING** is printed — may not match GUI-selected folders).
 
-The `--clean_caiman --confirm` safety prompt treats “source TIFs” as **non‑preview** `.tif` files only (excludes `*_rigid.tif` / `*_nonrigid.tif`), matching TIF→H5 selection logic.
+**`scratch_dir`** for FAST scratch subdirs is always taken from `pipeline_config.json`, even when folders come from the job file.
+
+| Mode | Removes (per folder, when present) | Does **not** remove |
+|------|-------------------------------------|---------------------|
+| **clean_caiman** | `unregistered.h5`, `registered.h5`, rigid/nonrigid shift CSVs, `*_rigid.tif` / `*_nonrigid.tif` | Raw acquisition TIFFs (`TSeries_*`, `file_*`, …) |
+| **clean_fast** | `checkpoint/`, `inference.h5`, `_fast_complete`, `_run_config.json`, `_inference_config.json`, example `*_registered_*.tif`, scratch subdir named like the session folder, shared FAST log files under `fast/logs/` | Raw TIFFs / CaImAn H5s |
+| **clean_all** | Union of the above (one manifest) | Same |
+
+If a folder has **`registered.h5`** but **no acquisition TIFs** (previews excluded), you must type **`yes`** before deletion proceeds.
 
 ## Running the pipeline
 
@@ -95,13 +103,16 @@ bash pipeline.sh --attach               # follow live output
 bash pipeline.sh --status               # service status + last log lines
 bash pipeline.sh --stop                 # stop a running pipeline
 
-# Cleanup
-bash pipeline.sh --clean_caiman         # dry run: show caiman artifacts
-bash pipeline.sh --clean_caiman --confirm   # delete caiman artifacts
-bash pipeline.sh --clean_fast           # dry run: show FAST artifacts
-bash pipeline.sh --clean_fast --confirm     # delete FAST artifacts
-bash pipeline.sh --clean_all            # dry run: show all artifacts
-bash pipeline.sh --clean_all --confirm      # delete everything
+# Cleanup (scan manifest, then optional delete)
+bash pipeline.sh --clean_caiman
+bash pipeline.sh --clean_caiman --confirm              # interactive y/N after manifest
+bash pipeline.sh --clean_caiman --confirm --yes       # skip y/N (scripts); unsafe prompt still needs TTY
+bash pipeline.sh --clean_caiman --from-job --confirm --yes
+bash pipeline.sh --clean_all --confirm -- /path/to/Exp1 /path/to/Exp2
+
+bash pipeline.sh --clean_fast
+bash pipeline.sh --clean_fast --confirm
+bash pipeline.sh --clean_all --confirm
 ```
 
 The pipeline runs as a systemd user service — it survives display/GDM crashes.

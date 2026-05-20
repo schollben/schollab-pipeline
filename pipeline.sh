@@ -7,12 +7,13 @@
 #   bash pipeline.sh --attach              # follow live output (journalctl)
 #   bash pipeline.sh --status              # service status + last log lines
 #   bash pipeline.sh --stop                # stop a running pipeline
-#   bash pipeline.sh --clean_caiman        # dry run: show caiman artifacts
-#   bash pipeline.sh --clean_caiman --confirm  # delete caiman artifacts
-#   bash pipeline.sh --clean_fast          # dry run: show FAST artifacts
-#   bash pipeline.sh --clean_fast --confirm    # delete FAST artifacts
-#   bash pipeline.sh --clean_all           # dry run: show all artifacts
-#   bash pipeline.sh --clean_all --confirm     # delete everything
+#   bash pipeline.sh --clean_caiman        # scan: list CaImAn artifacts (no delete)
+#   bash pipeline.sh --clean_caiman --confirm   # scan, prompt, then delete if confirmed
+#   bash pipeline.sh --clean_caiman --confirm --yes   # non-interactive delete (scripts)
+#   bash pipeline.sh --clean_caiman -- /path/A /path/B   # explicit session folders
+#   bash pipeline.sh --clean_caiman --from-job  # use /tmp/pipeline_job.json sessions
+#   bash pipeline.sh --clean_fast …          # same -- / --from-job / config fallback
+#   bash pipeline.sh --clean_all …
 #   bash pipeline.sh --setup                # conda envs (caiman + FAST), linger, scratch tmpfs
 
 set -euo pipefail
@@ -32,14 +33,26 @@ SCRATCH_TMPFS_SIZE="120G"
 
 CAIMAN_PYTHON="$SCHOLLAB_CONDA_ROOT/envs/caiman/bin/python"
 REGISTRATION_SCRIPT="$REPO_DIR/caiman/registration.py"
+JOB_FILE="${JOB_FILE:-/tmp/pipeline_job.json}"
 
 # ── parse args ────────────────────────────────────────────────────────────────
 
 MODE="start"
 CONFIRM=false
+CLEAN_FROM_JOB=false
+CLEAN_YES=false
+PASSTHRU=false
+CLEAN_PATHS=()
 
 for arg in "$@"; do
+	if $PASSTHRU; then
+		CLEAN_PATHS+=("$arg")
+		continue
+	fi
 	case "$arg" in
+		--)             PASSTHRU=true        ;;
+		--from-job)     CLEAN_FROM_JOB=true  ;;
+		--yes)          CLEAN_YES=true       ;;
 		--attach)       MODE="attach"        ;;
 		--status)       MODE="status"        ;;
 		--stop)         MODE="stop"          ;;
@@ -53,26 +66,206 @@ done
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-# Read folder list and scratch/log dirs from the FAST config
+# scratch_dir only (GUI runs do not update data_folders in config).
+_read_scratch_config() {
+	if [ ! -f "$FAST_CONFIG" ]; then
+		echo "ERROR: pipeline_config.json not found at $FAST_CONFIG"
+		exit 1
+	fi
+	SCRATCH_DIR=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); print(c['scratch_dir'])")
+}
+
+# Legacy full read (unused by --clean; kept for tooling).
 _read_config() {
 	if [ ! -f "$FAST_CONFIG" ]; then
 		echo "ERROR: pipeline_config.json not found at $FAST_CONFIG"
 		exit 1
 	fi
 	SCRATCH_DIR=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); print(c['scratch_dir'])")
-	FOLDERS=$(python3    -c "import json; c=json.load(open('$FAST_CONFIG')); [print(f) for f in c['data_folders']]")
+	FOLDERS=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); [print(f) for f in c['data_folders']]")
 }
 
-_delete() {
-	local target="$1"
-	if [ -e "$target" ] || [ -d "$target" ]; then
-		if $CONFIRM; then
-			rm -rf "$target"
-			echo "  deleted: $target"
-		else
-			echo "  [DRY-RUN] would delete: $target"
+# Session folders for --clean_*: paths after -- , --from-job, or config (warn if fallback).
+_resolve_clean_folders() {
+	_read_scratch_config
+	if [ "${#CLEAN_PATHS[@]}" -gt 0 ]; then
+		FOLDERS=$(printf '%s\n' "${CLEAN_PATHS[@]}")
+		echo "── Folder source: ${#CLEAN_PATHS[@]} path(s) after -- ─────────────────────"
+	elif $CLEAN_FROM_JOB; then
+		if [ ! -f "$JOB_FILE" ]; then
+			echo "ERROR: job file not found: $JOB_FILE"
+			echo "  The GUI writes this from registration.py, or pass folders after --."
+			exit 1
 		fi
+		export JOB_FILE
+		FOLDERS=$(python3 <<'PY'
+import json, os
+p = os.environ["JOB_FILE"]
+with open(p, encoding="utf-8") as f:
+	d = json.load(f)
+for s in d.get("sessions", []):
+	print(s)
+PY
+		)
+		echo "── Folder source: sessions from $JOB_FILE ─────────────────────────"
+	else
+		FOLDERS=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); [print(f) for f in c['data_folders']]")
+		echo "WARNING: Using data_folders from pipeline_config.json — may not match GUI-selected sessions." >&2
+		echo "  Prefer: --from-job or pass session paths after -- ." >&2
+		echo "── Folder source: pipeline_config.json data_folders (fallback) ─────────"
 	fi
+}
+
+# Second prompt unless CLEAN_YES (non-interactive automation).
+_clean_prompt_delete() {
+	local n="$1"
+	if $CLEAN_YES; then
+		return 0
+	fi
+	if ! [ -t 0 ]; then
+		echo "ERROR: stdin is not a TTY. Use --yes with --confirm for non-interactive delete."
+		exit 1
+	fi
+	read -r -p "Delete these $n path(s)? [y/N] " ans
+	if [ "$ans" != "y" ] && [ "$ans" != "Y" ]; then
+		echo "Aborted (no files removed)."
+		exit 0
+	fi
+}
+
+_clean_run_unsafe_registered_check() {
+	local UNSAFE_FOLDERS=()
+	local folder f
+	local tif_count
+	while IFS= read -r folder; do
+		folder="${folder%/}"
+		[ -z "$folder" ] && continue
+		if [ -f "$folder/registered.h5" ]; then
+			tif_count=$(find "$folder" -maxdepth 1 -type f \
+				-name "*.tif" \
+				! -name "*_rigid.tif" ! -name "*_nonrigid.tif" \
+				2>/dev/null | grep -v References | wc -l)
+			if [ "$tif_count" -eq 0 ]; then
+				UNSAFE_FOLDERS+=("$folder")
+			fi
+		fi
+	done <<< "$FOLDERS"
+
+	if [ "${#UNSAFE_FOLDERS[@]}" -eq 0 ]; then
+		return 0
+	fi
+	echo ""
+	echo "WARNING: The following folders have registered.h5 but NO acquisition source TIFs"
+	echo "  (previews *_rigid.tif / *_nonrigid.tif do not count)."
+	echo "  Deleting registered.h5 here is PERMANENT."
+	echo ""
+	local f
+	for f in "${UNSAFE_FOLDERS[@]}"; do
+		echo "  $f"
+	done
+	echo ""
+	if ! [ -t 0 ]; then
+		echo "ERROR: Unsafe-folder confirmation needs a TTY." >&2
+		exit 1
+	fi
+	read -r -p "Type 'yes' to confirm permanent deletion for these folders: " ans
+	if [ "$ans" != "yes" ]; then
+		echo "Aborted."
+		exit 1
+	fi
+	echo ""
+}
+
+_clean_collect_caiman_paths() {
+	shopt -s nullglob
+	local out=""
+	while IFS= read -r folder; do
+		folder="${folder%/}"
+		[ -z "$folder" ] && continue
+		local p
+		for p in \
+			"$folder/unregistered.h5" \
+			"$folder/registered.h5" \
+			"$folder/rigid_shifts.csv" \
+			"$folder/nonrigid_x_shifts.csv" \
+			"$folder/nonrigid_y_shifts.csv"
+		do
+			[ -e "$p" ] && out+="$p"$'\n'
+		done
+		local tif
+		for tif in "$folder"/*_rigid.tif "$folder"/*_nonrigid.tif; do
+			[ -e "$tif" ] && out+="$tif"$'\n'
+		done
+	done <<< "$FOLDERS"
+	shopt -u nullglob
+	printf '%s' "$out" | sort -u
+}
+
+_clean_collect_fast_paths() {
+	shopt -s nullglob
+	local out=""
+	while IFS= read -r folder; do
+		folder="${folder%/}"
+		[ -z "$folder" ] && continue
+		local folder_id p tif
+		folder_id=$(basename "$folder")
+		for p in \
+			"$folder/checkpoint" \
+			"$folder/inference.h5" \
+			"$folder/_fast_complete" \
+			"$folder/_run_config.json" \
+			"$folder/_inference_config.json"
+		do
+			[ -e "$p" ] && out+="$p"$'\n'
+		done
+		for tif in "$folder"/*_registered_*.tif; do
+			[ -e "$tif" ] && out+="$tif"$'\n'
+		done
+		[ -e "$SCRATCH_DIR/$folder_id" ] && out+="$SCRATCH_DIR/$folder_id"$'\n'
+	done <<< "$FOLDERS"
+	for p in \
+		"$FAST_LOG_DIR/_pipeline_status.json" \
+		"$FAST_LOG_DIR/gpu_stats.csv" \
+		"$FAST_LOG_DIR/ram_stats.txt"
+	do
+		[ -e "$p" ] && out+="$p"$'\n'
+	done
+	local f
+	for f in "$FAST_LOG_DIR"/_pipeline_log_*.txt; do
+		[ -e "$f" ] && out+="$f"$'\n'
+	done
+	shopt -u nullglob
+	printf '%s' "$out" | sort -u
+}
+
+_clean_print_manifest() {
+	local title="$1"
+	local manifest="$2"
+	echo ""
+	echo "════════════════════════════════════════════════════════"
+	echo "  $title"
+	echo "  Paths that exist on disk:"
+	echo "════════════════════════════════════════════════════════"
+	if [ -z "$(echo "$manifest" | sed '/^$/d')" ]; then
+		echo "  (none — nothing to remove)"
+	else
+		while IFS= read -r line; do
+			[ -n "$line" ] && echo "  $line"
+		done <<< "$manifest"
+	fi
+	echo ""
+}
+
+_clean_execute_manifest() {
+	while IFS= read -r p; do
+		[ -z "$p" ] && continue
+		rm -rf "$p"
+		echo "  deleted: $p"
+	done <<< "$1"
+}
+
+_clean_count_nonempty_lines() {
+	echo "$1" | sed '/^$/d' | wc -l | tr -d ' '
 }
 
 # Returns 0 if /etc/fstab already has this mount point as field 2
@@ -222,137 +415,93 @@ _setup_run() {
 # ── clean_caiman: remove caiman registration artifacts ────────────────────────
 
 _clean_caiman() {
-	_read_config
-	echo ""
-	echo "════════════════════════════════════════════════════════"
-	echo "  Clean caiman artifacts"
-	$CONFIRM && echo "  MODE: DELETING" || echo "  MODE: DRY RUN  (add --confirm to delete)"
-	echo "════════════════════════════════════════════════════════"
-	echo ""
-
-	# Safety check: warn if any folder has registered.h5 but no source TIFs.
-	# registered.h5 is irreplaceable if the original TIFs have been deleted.
-	# Ignore CaImAn sample TIFFs (*_rigid.tif / *_nonrigid.tif) — not raw acquisition.
-	if $CONFIRM; then
-		UNSAFE_FOLDERS=()
-		while IFS= read -r folder; do
-			folder="${folder%/}"
-			if [ -f "$folder/registered.h5" ]; then
-				tif_count=$(find "$folder" -maxdepth 1 -type f \
-					-name "*.tif" \
-					! -name "*_rigid.tif" ! -name "*_nonrigid.tif" \
-					2>/dev/null | grep -v References | wc -l)
-				if [ "$tif_count" -eq 0 ]; then
-					UNSAFE_FOLDERS+=("$folder")
-				fi
-			fi
-		done <<< "$FOLDERS"
-
-		if [ "${#UNSAFE_FOLDERS[@]}" -gt 0 ]; then
-			echo "WARNING: The following folders have registered.h5 but NO source TIFs."
-			echo "  Deleting registered.h5 here is PERMANENT — the data cannot be recovered."
-			echo ""
-			for f in "${UNSAFE_FOLDERS[@]}"; do
-				echo "  $f"
-			done
-			echo ""
-			read -r -p "Type 'yes' to confirm permanent deletion, or anything else to abort: " ans
-			if [ "$ans" != "yes" ]; then
-				echo "Aborted."
-				exit 1
-			fi
-			echo ""
-		fi
+	_resolve_clean_folders
+	echo "  Scratch: $SCRATCH_DIR"
+	local manifest n
+	manifest=$(_clean_collect_caiman_paths)
+	_clean_print_manifest "Clean CaImAn artifacts" "$manifest"
+	n=$(_clean_count_nonempty_lines "$manifest")
+	if [ "${n:-0}" -eq 0 ]; then
+		echo "Nothing to remove."
+		return 0
 	fi
-
-	while IFS= read -r folder; do
-		folder="${folder%/}"
-		echo "Folder: $folder"
-
-		# H5 files produced by TIFs→H5 and registration steps
-		_delete "$folder/unregistered.h5"
-		_delete "$folder/registered.h5"
-
-		# Shift CSVs written by rigid and non-rigid registration
-		_delete "$folder/rigid_shifts.csv"
-		_delete "$folder/nonrigid_x_shifts.csv"
-		_delete "$folder/nonrigid_y_shifts.csv"
-
-		# Sample TIFFs written by register_one_session (e.g. 01_rigid.tif, 02_nonrigid.tif)
-		for tif in "$folder"/*_rigid.tif "$folder"/*_nonrigid.tif; do
-			[ -e "$tif" ] && _delete "$tif"
-		done
-
-		echo ""
-	done <<< "$FOLDERS"
+	if ! $CONFIRM; then
+		echo "Scan only. Re-run with --confirm to delete after reviewing the list above."
+		return 0
+	fi
+	_clean_prompt_delete "$n"
+	_clean_run_unsafe_registered_check
+	echo "Deleting..."
+	_clean_execute_manifest "$manifest"
+	echo "CaImAn clean complete."
 }
 
 # ── clean_fast: remove FAST denoising artifacts ───────────────────────────────
 
 _clean_fast() {
-	_read_config
-	echo ""
-	echo "════════════════════════════════════════════════════════"
-	echo "  Clean FAST artifacts"
-	$CONFIRM && echo "  MODE: DELETING" || echo "  MODE: DRY RUN  (add --confirm to delete)"
+	_resolve_clean_folders
 	echo "  Scratch: $SCRATCH_DIR"
 	echo "  Logs:    $FAST_LOG_DIR"
-	echo "════════════════════════════════════════════════════════"
-	echo ""
+	local manifest n
+	manifest=$(_clean_collect_fast_paths)
+	_clean_print_manifest "Clean FAST artifacts" "$manifest"
+	n=$(_clean_count_nonempty_lines "$manifest")
+	if [ "${n:-0}" -eq 0 ]; then
+		echo "Nothing to remove."
+		return 0
+	fi
+	if ! $CONFIRM; then
+		echo "Scan only. Re-run with --confirm to delete after reviewing the list above."
+		return 0
+	fi
+	_clean_prompt_delete "$n"
+	echo "Deleting..."
+	_clean_execute_manifest "$manifest"
+	echo "FAST clean complete."
+}
 
-	while IFS= read -r folder; do
-		folder="${folder%/}"
-		echo "Folder: $folder"
+# ── clean_all: CaImAn + FAST ────────────────────────────────────────────────────
 
-		# Permanent drive: model weights, denoised output, sentinel, configs
-		_delete "$folder/checkpoint"
-		_delete "$folder/inference.h5"
-		_delete "$folder/_fast_complete"
-		_delete "$folder/_run_config.json"
-		_delete "$folder/_inference_config.json"
-
-		# Example result TIFFs copied to session root by FAST
-		for tif in "$folder"/*_registered_*.tif; do
-			[ -e "$tif" ] && _delete "$tif"
-		done
-
-		# Scratch (tmpfs): registered/, training/, result/ for this folder
-		folder_id=$(basename "$folder")
-		_delete "$SCRATCH_DIR/$folder_id"
-
-		echo ""
-	done <<< "$FOLDERS"
-
-	# FAST log files
-	echo "Logs:"
-	_delete "$FAST_LOG_DIR/_pipeline_status.json"
-	for f in "$FAST_LOG_DIR"/_pipeline_log_*.txt; do
-		[ -e "$f" ] && _delete "$f"
-	done
-	_delete "$FAST_LOG_DIR/gpu_stats.csv"
-	_delete "$FAST_LOG_DIR/ram_stats.txt"
-	echo ""
+_clean_all() {
+	_resolve_clean_folders
+	echo "  Scratch: $SCRATCH_DIR"
+	echo "  Logs:    $FAST_LOG_DIR"
+	local m1 m2 merged n
+	m1=$(_clean_collect_caiman_paths)
+	m2=$(_clean_collect_fast_paths)
+	merged=$(printf '%s\n%s\n' "$m1" "$m2" | sort -u)
+	_clean_print_manifest "Clean ALL (CaImAn + FAST)" "$merged"
+	n=$(_clean_count_nonempty_lines "$merged")
+	if [ "${n:-0}" -eq 0 ]; then
+		echo "Nothing to remove."
+		return 0
+	fi
+	if ! $CONFIRM; then
+		echo "Scan only. Re-run with --confirm to delete after reviewing the list above."
+		return 0
+	fi
+	_clean_prompt_delete "$n"
+	_clean_run_unsafe_registered_check
+	echo "Deleting..."
+	_clean_execute_manifest "$merged"
+	echo "Full clean complete."
 }
 
 # ── clean modes ───────────────────────────────────────────────────────────────
 
 if [ "$MODE" = "clean_caiman" ]; then
 	_clean_caiman
-	echo "Caiman dry run complete. Add --confirm to delete." && ! $CONFIRM && exit 0
-	echo "Caiman clean complete." && exit 0
+	exit 0
 fi
 
 if [ "$MODE" = "clean_fast" ]; then
 	_clean_fast
-	echo "FAST dry run complete. Add --confirm to delete." && ! $CONFIRM && exit 0
-	echo "FAST clean complete." && exit 0
+	exit 0
 fi
 
 if [ "$MODE" = "clean_all" ]; then
-	_clean_caiman
-	_clean_fast
-	echo "Dry run complete. Add --confirm to delete." && ! $CONFIRM && exit 0
-	echo "Full clean complete. Ready for a fresh run:" && exit 0
+	_clean_all
+	exit 0
 fi
 
 # ── status mode ───────────────────────────────────────────────────────────────
