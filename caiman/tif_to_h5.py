@@ -1,9 +1,58 @@
 from glob import glob
 import os
+import re
 import tifffile
 import numpy as np
 import h5py
 from tqdm import tqdm
+
+
+def _scanimage_tiffs_one_cycle(paths, cycle_re):
+    """
+    ScanImage folders may contain multiple cycles (file_00001_* vs file_00003_*).
+    Sorting merges them and breaks stack-depth checks. Pick one cycle: the one
+    with the most TIFFs (main acquisition usually wins over short test grabs).
+    """
+    from collections import defaultdict
+
+    groups = defaultdict(list)
+    for f in paths:
+        m = cycle_re.match(os.path.basename(f))
+        if m:
+            groups[m.group(1)].append(f)
+    if not groups:
+        return sorted(paths)
+    if len(groups) == 1:
+        return sorted(next(iter(groups.values())))
+    best = max(groups.keys(), key=lambda k: (len(groups[k]), k))
+    return sorted(groups[best])
+
+
+def _acquisition_tif_paths(sorted_paths):
+    """
+    Select TIFFs that belong to the recording, not CaImAn preview exports.
+
+    Why: sample movies (01_rigid.tif, …) sort before ScanImage stacks (file_* /
+    TSeries_*) and break depth checks. Prefer one homogeneous naming series.
+    """
+    out = []
+    for f in sorted_paths:
+        b = os.path.basename(f)
+        if b.endswith('_rigid.tif') or b.endswith('_nonrigid.tif'):
+            continue
+        out.append(f)
+    assert len(out) > 0, (
+        "No acquisition TIFFs left after excluding *_rigid.tif / *_nonrigid.tif — "
+        "folder may contain only CaImAn sample exports."
+    )
+    tseries = [f for f in out if os.path.basename(f).startswith('TSeries_')]
+    file_pref = [f for f in out if os.path.basename(f).startswith('file_')]
+    if len(tseries) > 0:
+        return _scanimage_tiffs_one_cycle(tseries, re.compile(r'^TSeries_(\d+)_'))
+    if len(file_pref) > 0:
+        return _scanimage_tiffs_one_cycle(file_pref, re.compile(r'^file_(\d+)_'))
+    return out
+
 
 def tif_stacks_to_h5(tif_dir, h5_savename, h5_key='mov', delete_tiffs=False, frame_offset=False, offset=30, channel='Ch2'):
     '''
@@ -25,11 +74,7 @@ def tif_stacks_to_h5(tif_dir, h5_savename, h5_key='mov', delete_tiffs=False, fra
             None - Writes .h5 file to disk at 'h5_savename' containing calcium movie data.
     '''
     all_tifs = sorted(glob(os.path.join(tif_dir, "*.tif")))
-    # ScanImage acquisition stacks are TSeries_*.tif. CaImAn sample outputs (e.g. 01_rigid.tif,
-    # 01_nonrigid.tif) sort before "TSeries_*" lexically and must not be mixed into conversion.
-    tseries_only = [f for f in all_tifs if os.path.basename(f).startswith('TSeries_')]
-    if len(tseries_only) > 0:
-        all_tifs = tseries_only
+    all_tifs = _acquisition_tif_paths(all_tifs)
     if channel is not None:
         has_channel_token = any('Ch' in os.path.basename(f) for f in all_tifs)
         if has_channel_token:

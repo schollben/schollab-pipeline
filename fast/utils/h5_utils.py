@@ -2,8 +2,49 @@ import h5py
 import tifffile
 import numpy as np
 import os
+import re
 from glob import glob
 from tqdm import tqdm
+
+def _scanimage_tiffs_one_cycle(paths, cycle_re):
+    """Same logic as caiman/tif_to_h5._scanimage_tiffs_one_cycle."""
+    from collections import defaultdict
+
+    groups = defaultdict(list)
+    for f in paths:
+        m = cycle_re.match(os.path.basename(f))
+        if m:
+            groups[m.group(1)].append(f)
+    if not groups:
+        return sorted(paths)
+    if len(groups) == 1:
+        return sorted(next(iter(groups.values())))
+    best = max(groups.keys(), key=lambda k: (len(groups[k]), k))
+    return sorted(groups[best])
+
+
+def _acquisition_tif_paths(sorted_paths):
+    """
+    Same rules as caiman/tif_to_h5._acquisition_tif_paths (FAST env cannot import caiman/).
+    """
+    out = []
+    for f in sorted_paths:
+        b = os.path.basename(f)
+        if b.endswith('_rigid.tif') or b.endswith('_nonrigid.tif'):
+            continue
+        out.append(f)
+    assert len(out) > 0, (
+        "No acquisition TIFFs left after excluding *_rigid.tif / *_nonrigid.tif — "
+        "folder may contain only CaImAn sample exports."
+    )
+    tseries = [f for f in out if os.path.basename(f).startswith('TSeries_')]
+    file_pref = [f for f in out if os.path.basename(f).startswith('file_')]
+    if len(tseries) > 0:
+        return _scanimage_tiffs_one_cycle(tseries, re.compile(r'^TSeries_(\d+)_'))
+    if len(file_pref) > 0:
+        return _scanimage_tiffs_one_cycle(file_pref, re.compile(r'^file_(\d+)_'))
+    return out
+
 
 # Keep aligned with caiman/tiff_compat.py (FAST env may use older tifffile).
 def _tiff_writer_append(writer, frame, contiguous=False):
@@ -91,10 +132,7 @@ def tif_stacks_to_h5(tif_dir, h5_savename, h5_key='mov', delete_tiffs=False, fra
         offset (int): Number of frames to add at beginning and end if frame_offset is True.
     """
     tif_fnames = sorted(glob(os.path.join(tif_dir, "*.tif")))
-    # Same rule as caiman/tif_to_h5.py: ignore CaImAn sample TIFFs when ScanImage stacks exist.
-    tseries_only = [f for f in tif_fnames if os.path.basename(f).startswith('TSeries_')]
-    if len(tseries_only) > 0:
-        tif_fnames = tseries_only
+    tif_fnames = _acquisition_tif_paths(tif_fnames)
     assert len(tif_fnames) > 0, f"No .tif files found in {tif_dir}"
 
     first_tif = tifffile.imread(tif_fnames[0])

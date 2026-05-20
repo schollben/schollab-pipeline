@@ -52,8 +52,17 @@ JOB_PATH      = '/tmp/pipeline_job.json'
 
 
 def register_one_session(parent_dir, mc_dict, keep_memmap, save_sample, sample_name):
-	# Finds the input h5 by globbing *registered.h5 — matches unregistered.h5
-	fnames = sorted(glob.glob(os.path.join(parent_dir, "*registered.h5")))
+	# Prefer unregistered.h5 — glob *registered.h5 sorts registered.h5 before unregistered.h5
+	# and would run motion correction on the wrong file when both exist.
+	unreg = os.path.join(parent_dir, 'unregistered.h5')
+	if os.path.isfile(unreg):
+		fnames = [unreg]
+	else:
+		fnames = sorted(glob.glob(os.path.join(parent_dir, "*registered.h5")))
+	if not fnames:
+		raise FileNotFoundError(
+			f"No *registered.h5 input in {parent_dir} (expected unregistered.h5 for a fresh run)."
+		)
 	mc_dict['fnames'] = fnames
 	mc_dict['upsample_factor_grid'] = 8
 
@@ -73,12 +82,19 @@ def register_one_session(parent_dir, mc_dict, keep_memmap, save_sample, sample_n
 		numframes = len(mc.shifts_rig)
 		np.savetxt(os.path.join(parent_dir, 'rigid_shifts.csv'), mc.shifts_rig, delimiter=',')
 
+	fnames_new = mc.mmap_file
+	if not fnames_new:
+		cm.stop_server(dview=dview)
+		raise RuntimeError(
+			"Motion correction returned no memmap paths (mc.mmap_file empty). "
+			"Check CaImAn version, input shape, and disk space."
+		)
+
 	# Rename unregistered.h5 → registered.h5 and write corrected frames into it
 	os.replace(fnames[0], os.path.join(parent_dir, 'registered.h5'))
 	datafile = h5py.File(os.path.join(parent_dir, 'registered.h5'), 'w')
 	datafile.create_dataset("mov", (numframes, 512, 512))
 
-	fnames_new    = mc.mmap_file
 	frames_written = 0
 
 	for i in range(0, math.floor(numframes / 1000)):
@@ -94,8 +110,8 @@ def register_one_session(parent_dir, mc_dict, keep_memmap, save_sample, sample_n
 		temp_data = np.array(mov[frames_written:mov.shape[0], :, :])
 		datafile["mov"][frames_written:mov.shape[0], :, :] = temp_data
 		del mov
+		del temp_data
 
-	del temp_data
 	cm.stop_server(dview=dview)
 
 	if not keep_memmap:
