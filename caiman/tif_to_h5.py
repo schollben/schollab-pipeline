@@ -25,6 +25,11 @@ def tif_stacks_to_h5(tif_dir, h5_savename, h5_key='mov', delete_tiffs=False, fra
             None - Writes .h5 file to disk at 'h5_savename' containing calcium movie data.
     '''
     all_tifs = sorted(glob(os.path.join(tif_dir, "*.tif")))
+    # ScanImage acquisition stacks are TSeries_*.tif. CaImAn sample outputs (e.g. 01_rigid.tif,
+    # 01_nonrigid.tif) sort before "TSeries_*" lexically and must not be mixed into conversion.
+    tseries_only = [f for f in all_tifs if os.path.basename(f).startswith('TSeries_')]
+    if len(tseries_only) > 0:
+        all_tifs = tseries_only
     if channel is not None:
         has_channel_token = any('Ch' in os.path.basename(f) for f in all_tifs)
         if has_channel_token:

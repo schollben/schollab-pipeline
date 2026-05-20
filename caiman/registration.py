@@ -27,6 +27,7 @@ import tifffile
 # Import from renamed modules in the same caiman/ directory
 from registration_gui import get_registration_options
 from tif_to_h5 import tif_stacks_to_h5
+from tiff_compat import tiff_writer_append
 
 global mc
 
@@ -105,7 +106,7 @@ def register_one_session(parent_dir, mc_dict, keep_memmap, save_sample, sample_n
 		with tifffile.TiffWriter(os.path.join(parent_dir, sample_name), bigtiff=False, imagej=False) as tif:
 			for i in range(0, min(4000, numframes)):
 				curfr = datafile["mov"][i,:,:].astype(np.int16)
-				tif.write(curfr)
+				tiff_writer_append(tif, curfr, contiguous=False)
 
 	datafile.close()
 

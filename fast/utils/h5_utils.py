@@ -5,6 +5,22 @@ import os
 from glob import glob
 from tqdm import tqdm
 
+# Keep aligned with caiman/tiff_compat.py (FAST env may use older tifffile).
+def _tiff_writer_append(writer, frame, contiguous=False):
+    if hasattr(writer, 'write'):
+        if contiguous:
+            writer.write(frame, contiguous=True)
+        else:
+            writer.write(frame)
+        return
+    if contiguous:
+        try:
+            writer.save(frame, contiguous=True)
+        except TypeError:
+            writer.save(frame)
+    else:
+        writer.save(frame)
+
 
 def h5_to_tiff(h5_path, max_frames=None, chunk_size=5000, output_dir=None):
     """
@@ -55,7 +71,7 @@ def h5_to_tiff(h5_path, max_frames=None, chunk_size=5000, output_dir=None):
                     if (i - start_frame) % 1000 == 0:
                         print(f"  Processing frame {i - start_frame}/{chunk_frames}...")
                     curfr = dataset[i, :, :].astype(np.int16)
-                    tif.write(curfr, contiguous=True)
+                    _tiff_writer_append(tif, curfr, contiguous=True)
 
             print(f"  Successfully saved {chunk_frames} frames to {chunk_output}")
 
@@ -75,6 +91,10 @@ def tif_stacks_to_h5(tif_dir, h5_savename, h5_key='mov', delete_tiffs=False, fra
         offset (int): Number of frames to add at beginning and end if frame_offset is True.
     """
     tif_fnames = sorted(glob(os.path.join(tif_dir, "*.tif")))
+    # Same rule as caiman/tif_to_h5.py: ignore CaImAn sample TIFFs when ScanImage stacks exist.
+    tseries_only = [f for f in tif_fnames if os.path.basename(f).startswith('TSeries_')]
+    if len(tseries_only) > 0:
+        tif_fnames = tseries_only
     assert len(tif_fnames) > 0, f"No .tif files found in {tif_dir}"
 
     first_tif = tifffile.imread(tif_fnames[0])

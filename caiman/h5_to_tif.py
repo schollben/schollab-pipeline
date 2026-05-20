@@ -5,6 +5,8 @@ import os
 import glob
 import sys
 
+from tiff_compat import tiff_writer_append
+
 
 def h5_to_tiff(h5_path, max_frames=None, chunk_size=5000, output_dir=None):
     """
@@ -65,7 +67,7 @@ def h5_to_tiff(h5_path, max_frames=None, chunk_size=5000, output_dir=None):
                     if (i - start_frame) % 1000 == 0:
                         print(f"  Processing frame {i - start_frame}/{chunk_frames}...")
                     curfr = dataset[i, :, :].astype(np.int16)
-                    tif.write(curfr, contiguous=True)
+                    tiff_writer_append(tif, curfr, contiguous=True)
 
             print(f"  Successfully saved {chunk_frames} frames to {chunk_output}")
 

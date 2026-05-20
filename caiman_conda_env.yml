@@ -476,4 +476,6 @@ dependencies:
   - zstd=1.5.6=ha6fb4c9_0
   - pip:
       - roifile==2024.9.15
-prefix: /home/schollab-dion/miniconda3/envs/caiman
+# No `prefix:` — keep this file portable; conda installs into the active install's envs dir.
+# Use: conda env create/update -n caiman -f caiman_conda_env.yml
+# Pipeline: SCHOLLAB_CONDA_ROOT / CONDA_BIN in pipeline.sh (see README).
