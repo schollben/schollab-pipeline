@@ -232,12 +232,16 @@ _clean_caiman() {
 
 	# Safety check: warn if any folder has registered.h5 but no source TIFs.
 	# registered.h5 is irreplaceable if the original TIFs have been deleted.
+	# Ignore CaImAn sample TIFFs (*_rigid.tif / *_nonrigid.tif) — not raw acquisition.
 	if $CONFIRM; then
 		UNSAFE_FOLDERS=()
 		while IFS= read -r folder; do
 			folder="${folder%/}"
 			if [ -f "$folder/registered.h5" ]; then
-				tif_count=$(find "$folder" -maxdepth 1 -name "*.tif" 2>/dev/null | grep -v References | wc -l)
+				tif_count=$(find "$folder" -maxdepth 1 -type f \
+					-name "*.tif" \
+					! -name "*_rigid.tif" ! -name "*_nonrigid.tif" \
+					2>/dev/null | grep -v References | wc -l)
 				if [ "$tif_count" -eq 0 ]; then
 					UNSAFE_FOLDERS+=("$folder")
 				fi
@@ -274,7 +278,7 @@ _clean_caiman() {
 		_delete "$folder/nonrigid_x_shifts.csv"
 		_delete "$folder/nonrigid_y_shifts.csv"
 
-		# Sample TIFFs written by register_one_session (4000-frame previews)
+		# Sample TIFFs written by register_one_session (e.g. 01_rigid.tif, 02_nonrigid.tif)
 		for tif in "$folder"/*_rigid.tif "$folder"/*_nonrigid.tif; do
 			[ -e "$tif" ] && _delete "$tif"
 		done

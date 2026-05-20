@@ -163,10 +163,15 @@ def register_bulk(sessions_to_run, process_selections):
 			# Verify source TIFs exist BEFORE deleting anything.
 			# Deleting registered.h5 first and then failing on missing TIFs
 			# would permanently destroy the only copy of the registered data.
-			source_tifs = [
-				f for f in glob.glob(os.path.join(sessions_to_run[i], "*.tif"))
-				if 'References' not in f
-			]
+			# Exclude CaImAn sample exports — same idea as tif_to_h5._acquisition_tif_paths.
+			source_tifs = []
+			for f in glob.glob(os.path.join(sessions_to_run[i], "*.tif")):
+				if 'References' in f:
+					continue
+				b = os.path.basename(f)
+				if b.endswith('_rigid.tif') or b.endswith('_nonrigid.tif'):
+					continue
+				source_tifs.append(f)
 			if not source_tifs:
 				print(f"WARNING: No source TIFs found in {sessions_to_run[i]}")
 				print(f"  Skipping TIFs→H5 step — registered.h5 left untouched.")

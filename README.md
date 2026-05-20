@@ -68,7 +68,21 @@ FAST uses `scratch_dir` (often `/mnt/fast_tmp`) for fast intermediate I/O. On **
 - append a **tmpfs** line to `/etc/fstab` (if not already present),
 - run `sudo mount` so it matches reboot behavior.
 
-Tune the RAM cap by editing `SCRATCH_TMPFS_SIZE` at the top of `pipeline.sh` (default `50G`). If `scratch_dir` already exists as a **non-empty** directory and is not mounted, the script exits rather than overlay tmpfs and hide files.
+Tune the RAM cap by editing `SCRATCH_TMPFS_SIZE` at the top of `pipeline.sh`. If `scratch_dir` already exists as a **non-empty** directory and is not mounted, the script exits rather than overlay tmpfs and hide files.
+
+**Note:** `bash pipeline.sh` (GUI start) may have tmpfs setup commented out in favor of a disk-backed `scratch_dir`; **`--setup`** still configures tmpfs if you use that workflow. Check comments at the bottom of [`pipeline.sh`](pipeline.sh).
+
+### Cleanup (`--clean_caiman`, `--clean_fast`, `--clean_all`)
+
+Targets come from `data_folders` in [`fast/pipeline_config.json`](fast/pipeline_config.json).
+
+| Mode | Removes (per folder) | Does **not** remove |
+|------|----------------------|---------------------|
+| **clean_caiman** | `unregistered.h5`, `registered.h5`, rigid/nonrigid shift CSVs, `*_rigid.tif` / `*_nonrigid.tif` (CaImAn previews) | Raw acquisition TIFFs (`TSeries_*`, `file_*`, etc.) |
+| **clean_fast** | `checkpoint/`, `inference.h5`, `_fast_complete`, `_run_config.json`, `_inference_config.json`, example `*_registered_*.tif` in the folder, scratch subdir named after the folder | Raw TIFFs / CaImAn H5s |
+| **clean_all** | Both of the above | Same |
+
+The `--clean_caiman --confirm` safety prompt treats “source TIFs” as **non‑preview** `.tif` files only (excludes `*_rigid.tif` / `*_nonrigid.tif`), matching TIF→H5 selection logic.
 
 ## Running the pipeline
 
