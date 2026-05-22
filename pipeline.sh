@@ -1,25 +1,25 @@
 #!/bin/bash
-# pipeline.sh
+# PreProcess2PImage.sh
 # Single entry point for the schollab caiman+FAST pipeline.
 #
 # Usage:
-#   bash pipeline.sh                       # launch GUI, start pipeline
-#   bash pipeline.sh --attach              # follow live output (journalctl)
-#   bash pipeline.sh --status              # service status + last log lines
-#   bash pipeline.sh --stop                # stop a running pipeline
-#   bash pipeline.sh --clean_caiman        # scan: list CaImAn artifacts (no delete)
-#   bash pipeline.sh --clean_caiman --confirm   # scan, prompt, then delete if confirmed
-#   bash pipeline.sh --clean_caiman --confirm --yes   # non-interactive delete (scripts)
-#   bash pipeline.sh --clean_caiman -- /path/A /path/B   # explicit session folders
-#   bash pipeline.sh --clean_caiman --from-job  # use /tmp/pipeline_job.json sessions
-#   bash pipeline.sh --clean_fast …          # same -- / --from-job / config fallback
-#   bash pipeline.sh --clean_all …
-#   bash pipeline.sh --setup                # conda envs (caiman + FAST), linger, scratch tmpfs
+#   bash PreProcess2PImage.sh                       # launch GUI, start pipeline
+#   bash PreProcess2PImage.sh --attach              # follow live output (journalctl)
+#   bash PreProcess2PImage.sh --status              # service status + last log lines
+#   bash PreProcess2PImage.sh --stop                # stop a running pipeline
+#   bash PreProcess2PImage.sh --clean_caiman        # scan: list CaImAn artifacts (no delete)
+#   bash PreProcess2PImage.sh --clean_caiman --confirm   # scan, prompt, then delete if confirmed
+#   bash PreProcess2PImage.sh --clean_caiman --confirm --yes   # non-interactive delete (scripts)
+#   bash PreProcess2PImage.sh --clean_caiman -- /path/A /path/B   # explicit session folders
+#   bash PreProcess2PImage.sh --clean_caiman --from-job  # use /tmp/pipeline_job.json sessions
+#   bash PreProcess2PImage.sh --clean_fast …          # same -- / --from-job / config fallback
+#   bash PreProcess2PImage.sh --clean_all …
+#   bash PreProcess2PImage.sh --setup                # conda envs (caiman + FAST), linger, scratch tmpfs
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UNIT_NAME="schollab-pipeline"
+UNIT_NAME="schollab-PreProcess2PImage"
 FAST_LOG_DIR="$REPO_DIR/fast/logs"
 FAST_CONFIG="$REPO_DIR/fast/pipeline_config.json"
 
@@ -312,7 +312,7 @@ _ensure_scratch_tmpfs() {
 	_sudo_or_die() {
 		if ! sudo "$@"; then
 			echo ""
-			echo "ERROR: sudo failed. Configure manually, then re-run pipeline.sh:"
+			echo "ERROR: sudo failed. Configure manually, then re-run PreProcess2PImage.sh:"
 			echo "  sudo mkdir -p $SCRATCH_DIR"
 			echo "  Add to /etc/fstab:"
 			echo "    tmpfs	${SCRATCH_DIR}	tmpfs	defaults,size=${SCRATCH_TMPFS_SIZE},mode=0777	0	0"
@@ -409,7 +409,7 @@ _setup_run() {
 	echo "── FAST scratch tmpfs ─────────────────────────────────"
 	_ensure_scratch_tmpfs
 	echo ""
-	echo "Setup complete. Next: bash pipeline.sh"
+	echo "Setup complete. Next: bash PreProcess2PImage.sh"
 }
 
 # ── clean_caiman: remove caiman registration artifacts ────────────────────────
@@ -545,7 +545,7 @@ fi
 
 if [ ! -f "$CAIMAN_PYTHON" ]; then
 	echo "ERROR: caiman python not found at $CAIMAN_PYTHON"
-	echo "  Install envs (bash pipeline.sh --setup) or set SCHOLLAB_CONDA_ROOT to your conda prefix."
+	echo "  Install envs (bash PreProcess2PImage.sh --setup) or set SCHOLLAB_CONDA_ROOT to your conda prefix."
 	exit 1
 fi
 
@@ -557,7 +557,7 @@ mkdir -p "$FAST_LOG_DIR"
 # FAST scratch tmpfs — disabled: use disk-backed scratch_dir in pipeline_config.json.
 # _ensure_scratch_tmpfs
 
-echo "Starting Schollab pipeline..."
+echo "Starting PreProcess2PImage..."
 echo "  Caiman python: $CAIMAN_PYTHON"
 echo "  Repo:          $REPO_DIR"
 echo ""
@@ -569,7 +569,7 @@ echo ""
 
 echo ""
 echo "Useful commands:"
-echo "  Follow live output:  bash pipeline.sh --attach"
-echo "  Check status:        bash pipeline.sh --status"
-echo "  Stop pipeline:       bash pipeline.sh --stop"
+echo "  Follow live output:  bash PreProcess2PImage.sh --attach"
+echo "  Check status:        bash PreProcess2PImage.sh --status"
+echo "  Stop pipeline:       bash PreProcess2PImage.sh --stop"
 echo "  Raw journal:         journalctl --user -f -u $UNIT_NAME"
