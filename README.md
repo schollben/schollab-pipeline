@@ -5,7 +5,7 @@ End-to-end calcium imaging pre processing pipeline: CaImAn motion correction →
 ## Structure
 
 ```
-schollab-pipeline/
+PreProcess2PImages/
 ├── caiman/                  CaImAn motion correction
 │   ├── registration.py      Entry point: GUI → job file → systemd service
 │   ├── registration_gui.py  wxPython folder picker + step checkboxes
@@ -21,7 +21,7 @@ schollab-pipeline/
 │   └── scan_sessions.py     Audit recording sessions before running
 ├── workers/
 │   └── pipeline_worker.py    Headless per-folder caiman→FAST (systemd only)
-├── pipeline.sh              Launcher: --setup, GUI + status/attach/stop + clean
+├── PreProcess2PImages.sh              Launcher: --setup, GUI + status/attach/stop + clean
 ├── caiman_conda_env.yml     CaImAn conda environment spec
 └── fast_pip_requirements.txt  FAST pip requirements
 ```
@@ -37,7 +37,7 @@ schollab-pipeline/
   export SCHOLLAB_CONDA_ROOT="$HOME/miniconda3"
   ```
 
-  before `bash pipeline.sh` / the GUI. `pipeline.sh` derives **`CONDA_BIN`** from `SCHOLLAB_CONDA_ROOT` unless you override **`CONDA_BIN`** directly. The GUI passes **`SCHOLLAB_CONDA_ROOT`** into the systemd worker so FAST uses the same prefix.
+  before `bash PreProcess2PImages.sh` / the GUI. `PreProcess2PImages.sh` derives **`CONDA_BIN`** from `SCHOLLAB_CONDA_ROOT` unless you override **`CONDA_BIN`** directly. The GUI passes **`SCHOLLAB_CONDA_ROOT`** into the systemd worker so FAST uses the same prefix.
 
 Two conda environments — kept separate due to dependency conflicts:
 
@@ -49,7 +49,7 @@ Two conda environments — kept separate due to dependency conflicts:
 **Preferred setup** (creates/updates both envs, enables systemd linger, creates log dir, configures scratch tmpfs — may prompt for **sudo** at the end):
 
 ```bash
-bash pipeline.sh --setup
+bash PreProcess2PImages.sh --setup
 ```
 
 Manual fallback (equivalent ingredients):
@@ -62,15 +62,15 @@ conda run -n FAST pip install -r fast_pip_requirements.txt
 
 ### FAST scratch directory (`scratch_dir` in `pipeline_config.json`)
 
-FAST uses `scratch_dir` (often `/mnt/fast_tmp`) for fast intermediate I/O. On **`bash pipeline.sh --setup`** or the first normal **`bash pipeline.sh`** run, the script prompts for **sudo** to:
+FAST uses `scratch_dir` (often `/mnt/fast_tmp`) for fast intermediate I/O. On **`bash PreProcess2PImages.sh --setup`** or the first normal **`bash PreProcess2PImages.sh`** run, the script prompts for **sudo** to:
 
 - create the mount point directory,
 - append a **tmpfs** line to `/etc/fstab` (if not already present),
 - run `sudo mount` so it matches reboot behavior.
 
-Tune the RAM cap by editing `SCRATCH_TMPFS_SIZE` at the top of `pipeline.sh`. If `scratch_dir` already exists as a **non-empty** directory and is not mounted, the script exits rather than overlay tmpfs and hide files.
+Tune the RAM cap by editing `SCRATCH_TMPFS_SIZE` at the top of `PreProcess2PImages.sh`. If `scratch_dir` already exists as a **non-empty** directory and is not mounted, the script exits rather than overlay tmpfs and hide files.
 
-**Note:** `bash pipeline.sh` (GUI start) may have tmpfs setup commented out in favor of a disk-backed `scratch_dir`; **`--setup`** still configures tmpfs if you use that workflow. Check comments at the bottom of [`pipeline.sh`](pipeline.sh).
+**Note:** `bash PreProcess2PImages.sh` (GUI start) may have tmpfs setup commented out in favor of a disk-backed `scratch_dir`; **`--setup`** still configures tmpfs if you use that workflow. Check comments at the bottom of [`PreProcess2PImages.sh`](PreProcess2PImages.sh).
 
 ### Cleanup (`--clean_caiman`, `--clean_fast`, `--clean_all`)
 
@@ -78,7 +78,7 @@ Each mode **scans disk first**, prints a **single manifest** of paths that exist
 
 - **`--confirm`**: after the manifest, you get a **`Delete N path(s)? [y/N]`** prompt (needs a TTY). **`--yes`** skips that prompt for scripting (unsafe-folder rules still require a TTY and typed `yes` when applicable).
 - **Folder list** (precedence):
-  1. Paths after **`--`**: `bash pipeline.sh --clean_caiman -- /data/session1 /data/session2`
+  1. Paths after **`--`**: `bash PreProcess2PImages.sh --clean_caiman -- /data/session1 /data/session2`
   2. **`--from-job`**: read `sessions` from **`/tmp/pipeline_job.json`** (GUI job file); override path with env **`JOB_FILE`** if needed.
   3. Else **`data_folders`** in [`fast/pipeline_config.json`](fast/pipeline_config.json) (a **WARNING** is printed — may not match GUI-selected folders).
 
@@ -97,22 +97,22 @@ If a folder has **`registered.h5`** but **no acquisition TIFs** (previews exclud
 The registration GUI pre-checks **TIFs→.H5** and **First Rigid** by default for each folder so motion correction runs and `registered.h5` exists for FAST if you leave defaults; adjust the columns per folder as needed.
 
 ```bash
-bash pipeline.sh --setup                 # conda envs + linger + scratch tmpfs (new machine)
-bash pipeline.sh                        # open GUI, launch pipeline
-bash pipeline.sh --attach               # follow live output
-bash pipeline.sh --status               # service status + last log lines
-bash pipeline.sh --stop                 # stop a running pipeline
+bash PreProcess2PImages.sh --setup                 # conda envs + linger + scratch tmpfs (new machine)
+bash PreProcess2PImages.sh                        # open GUI, launch pipeline
+bash PreProcess2PImages.sh --attach               # follow live output
+bash PreProcess2PImages.sh --status               # service status + last log lines
+bash PreProcess2PImages.sh --stop                 # stop a running pipeline
 
 # Cleanup (scan manifest, then optional delete)
-bash pipeline.sh --clean_caiman
-bash pipeline.sh --clean_caiman --confirm              # interactive y/N after manifest
-bash pipeline.sh --clean_caiman --confirm --yes       # skip y/N (scripts); unsafe prompt still needs TTY
-bash pipeline.sh --clean_caiman --from-job --confirm --yes
-bash pipeline.sh --clean_all --confirm -- /path/to/Exp1 /path/to/Exp2
+bash PreProcess2PImages.sh --clean_caiman
+bash PreProcess2PImages.sh --clean_caiman --confirm              # interactive y/N after manifest
+bash PreProcess2PImages.sh --clean_caiman --confirm --yes       # skip y/N (scripts); unsafe prompt still needs TTY
+bash PreProcess2PImages.sh --clean_caiman --from-job --confirm --yes
+bash PreProcess2PImages.sh --clean_all --confirm -- /path/to/Exp1 /path/to/Exp2
 
-bash pipeline.sh --clean_fast
-bash pipeline.sh --clean_fast --confirm
-bash pipeline.sh --clean_all --confirm
+bash PreProcess2PImages.sh --clean_fast
+bash PreProcess2PImages.sh --clean_fast --confirm
+bash PreProcess2PImages.sh --clean_all --confirm
 ```
 
 The pipeline runs as a systemd user service — it survives display/GDM crashes.
