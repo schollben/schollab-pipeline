@@ -1,6 +1,6 @@
-# schollab-pipeline
+# PreProcess2PImages
 
-End-to-end calcium imaging pipeline: CaImAn motion correction → FAST denoising.
+End-to-end calcium imaging pre processing pipeline: CaImAn motion correction → FAST denoising.
 
 ## Structure
 
