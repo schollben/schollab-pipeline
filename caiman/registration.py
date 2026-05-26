@@ -186,15 +186,20 @@ def register_bulk(sessions_to_run, process_selections):
 
 		if process_selections[1, i]:
 			n_procs += 1
+			# Each pass must set its mode explicitly; NoRMCorre mutates this flag below.
+			mc_dict['pw_rigid'] = False
 			register_one_session(sessions_to_run[i], mc_dict, keep_memmap=False,
 				save_sample=True, sample_name=f"{n_procs:02}_rigid.tif")
 
 		if process_selections[2, i]:
+			# Prevent a prior non-rigid pass/folder from making this rigid pass expensive.
+			mc_dict['pw_rigid'] = False
 			register_one_session(sessions_to_run[i], mc_dict, keep_memmap=False,
 				save_sample=True, sample_name=f"{n_procs:02}_rigid.tif")
 			n_procs += 1
 
 		if process_selections[3, i]:
+			# NoRMCorre is the only pass that should use piecewise-rigid motion correction.
 			mc_dict['pw_rigid'] = True
 			register_one_session(sessions_to_run[i], mc_dict, keep_memmap=False,
 				save_sample=True, sample_name=f"{n_procs:02}_nonrigid.tif")
