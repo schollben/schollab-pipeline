@@ -16,7 +16,6 @@ import os
 import sys
 import json
 import subprocess
-import numpy as np
 
 # Repo root is parent of workers/ — worker moved from repo root so we need two dirnames.
 REPO_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -25,6 +24,7 @@ FAST_DIR    = os.path.join(REPO_DIR, 'fast')
 sys.path.insert(0, CAIMAN_DIR)
 
 from registration import register_bulk
+import numpy as np  # registration applies CaImAn thread caps before NumPy is loaded.
 
 
 def _schollab_conda_root():
@@ -71,14 +71,24 @@ def run_fast_on_folder(folder, base_cfg, folder_idx):
 	# come from the base config on the server
 	single_cfg = {**base_cfg, "data_folders": [folder]}
 	cfg_path   = f"/tmp/fast_cfg_{folder_idx}.json"
+	fast_env   = os.environ.copy()
+	fast_threads = base_cfg.get("threads", {})
+
+	for key, value in fast_threads.items():
+		# FAST runs in a separate Python env; keep its numerical thread caps independent.
+		fast_env[key] = str(value)
 
 	with open(cfg_path, "w") as f:
 		json.dump(single_cfg, f, indent=2)
 
 	print(f"  [FAST] Running denoising on: {folder}")
+	if fast_threads:
+		thread_summary = ", ".join(f"{key}={fast_env[key]}" for key in sorted(fast_threads))
+		print(f"  [FAST] Thread env: {thread_summary}")
 	result = subprocess.run(
 		[FAST_PYTHON, FAST_SCRIPT, "--config", cfg_path],
 		# Inherit stdout/stderr so output appears in journalctl
+		env=fast_env,
 		check=False
 	)
 	if result.returncode != 0:
