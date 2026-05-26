@@ -1,27 +1,28 @@
 #!/bin/bash
-# PreProcess2PImage.sh
+# PreProcess2PImages.sh
 # Single entry point for the schollab caiman+FAST pipeline.
 #
 # Usage:
-#   bash PreProcess2PImage.sh                       # launch GUI, start pipeline
-#   bash PreProcess2PImage.sh --attach              # follow live output (journalctl)
-#   bash PreProcess2PImage.sh --status              # service status + last log lines
-#   bash PreProcess2PImage.sh --stop                # stop a running pipeline
-#   bash PreProcess2PImage.sh --clean_caiman        # scan: list CaImAn artifacts (no delete)
-#   bash PreProcess2PImage.sh --clean_caiman --confirm   # scan, prompt, then delete if confirmed
-#   bash PreProcess2PImage.sh --clean_caiman --confirm --yes   # non-interactive delete (scripts)
-#   bash PreProcess2PImage.sh --clean_caiman -- /path/A /path/B   # explicit session folders
-#   bash PreProcess2PImage.sh --clean_caiman --from-job  # use /tmp/pipeline_job.json sessions
-#   bash PreProcess2PImage.sh --clean_fast …          # same -- / --from-job / config fallback
-#   bash PreProcess2PImage.sh --clean_all …
-#   bash PreProcess2PImage.sh --setup                # conda envs (caiman + FAST), linger, scratch tmpfs
+#   bash PreProcess2PImages.sh                       # launch GUI, start pipeline
+#   bash PreProcess2PImages.sh --attach              # follow live output (journalctl)
+#   bash PreProcess2PImages.sh --status              # service status + last log lines
+#   bash PreProcess2PImages.sh --stop                # stop a running pipeline
+#   bash PreProcess2PImages.sh --clean_caiman        # scan: list CaImAn artifacts (no delete)
+#   bash PreProcess2PImages.sh --clean_caiman --confirm   # scan, prompt, then delete if confirmed
+#   bash PreProcess2PImages.sh --clean_caiman --confirm --yes   # non-interactive delete (scripts)
+#   bash PreProcess2PImages.sh --clean_caiman -- /path/A /path/B   # explicit session folders
+#   bash PreProcess2PImages.sh --clean_caiman --from-job  # use /tmp/pipeline_job.json sessions
+#   bash PreProcess2PImages.sh --clean_fast …          # same -- / --from-job / config fallback
+#   bash PreProcess2PImages.sh --clean_all …
+#   bash PreProcess2PImages.sh --setup                # conda envs (caiman + FAST), linger, scratch tmpfs
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UNIT_NAME="schollab-PreProcess2PImage"
+UNIT_NAME="schollab-PreProcess2PImages"
 FAST_LOG_DIR="$REPO_DIR/fast/logs"
-FAST_CONFIG="$REPO_DIR/fast/pipeline_config.json"
+FAST_CONFIG="$REPO_DIR/fast/config.json"
+FAST_CONFIG_LEGACY="$REPO_DIR/fast/pipeline_config.json"
 
 # Conda install prefix (Miniforge vs Miniconda, etc.). Export SCHOLLAB_CONDA_ROOT on hosts
 # where envs live under e.g. ~/miniconda3 — must match registration.py / pipeline_worker.py.
@@ -66,21 +67,31 @@ done
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+_resolve_fast_config() {
+	if [ -f "$FAST_CONFIG" ]; then
+		return 0
+	fi
+	if [ -f "$FAST_CONFIG_LEGACY" ]; then
+		echo "WARNING: Using legacy FAST config path: $FAST_CONFIG_LEGACY" >&2
+		echo "  Rename it to fast/config.json when convenient." >&2
+		FAST_CONFIG="$FAST_CONFIG_LEGACY"
+		return 0
+	fi
+	echo "ERROR: FAST config not found:"
+	echo "  $FAST_CONFIG"
+	echo "  $FAST_CONFIG_LEGACY"
+	exit 1
+}
+
 # scratch_dir only (GUI runs do not update data_folders in config).
 _read_scratch_config() {
-	if [ ! -f "$FAST_CONFIG" ]; then
-		echo "ERROR: pipeline_config.json not found at $FAST_CONFIG"
-		exit 1
-	fi
+	_resolve_fast_config
 	SCRATCH_DIR=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); print(c['scratch_dir'])")
 }
 
 # Legacy full read (unused by --clean; kept for tooling).
 _read_config() {
-	if [ ! -f "$FAST_CONFIG" ]; then
-		echo "ERROR: pipeline_config.json not found at $FAST_CONFIG"
-		exit 1
-	fi
+	_resolve_fast_config
 	SCRATCH_DIR=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); print(c['scratch_dir'])")
 	FOLDERS=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); [print(f) for f in c['data_folders']]")
 }
@@ -109,10 +120,11 @@ PY
 		)
 		echo "── Folder source: sessions from $JOB_FILE ─────────────────────────"
 	else
+		_resolve_fast_config
 		FOLDERS=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); [print(f) for f in c['data_folders']]")
-		echo "WARNING: Using data_folders from pipeline_config.json — may not match GUI-selected sessions." >&2
+		echo "WARNING: Using data_folders from FAST config — may not match GUI-selected sessions." >&2
 		echo "  Prefer: --from-job or pass session paths after -- ." >&2
-		echo "── Folder source: pipeline_config.json data_folders (fallback) ─────────"
+		echo "── Folder source: FAST config data_folders (fallback) ─────────────────"
 	fi
 }
 
@@ -279,14 +291,11 @@ _fstab_has_scratch_mount() {
 	' /etc/fstab 2>/dev/null
 }
 
-# Ensure scratch_dir from pipeline_config.json is a mounted tmpfs (creates dir,
+# Ensure scratch_dir from fast/config.json is a mounted tmpfs (creates dir,
 # appends /etc/fstab once, mounts). Refuses to overlay tmpfs on a non-empty
 # directory that is not already the mount point — avoids hiding existing data.
 _ensure_scratch_tmpfs() {
-	if [ ! -f "$FAST_CONFIG" ]; then
-		echo "ERROR: pipeline_config.json not found at $FAST_CONFIG"
-		exit 1
-	fi
+	_resolve_fast_config
 	local SCRATCH_DIR
 	SCRATCH_DIR=$(python3 -c "import json; print(json.load(open('$FAST_CONFIG'))['scratch_dir'])")
 
@@ -302,7 +311,7 @@ _ensure_scratch_tmpfs() {
 	if [ -d "$SCRATCH_DIR" ] && [ -n "$(ls -A "$SCRATCH_DIR" 2>/dev/null)" ]; then
 		echo "ERROR: scratch_dir exists, is not mounted, and is not empty:"
 		echo "  $SCRATCH_DIR"
-		echo "  Empty it or pick a different scratch_dir in pipeline_config.json"
+		echo "  Empty it or pick a different scratch_dir in fast/config.json"
 		echo "  before mounting tmpfs (would hide existing files)."
 		exit 1
 	fi
@@ -312,7 +321,7 @@ _ensure_scratch_tmpfs() {
 	_sudo_or_die() {
 		if ! sudo "$@"; then
 			echo ""
-			echo "ERROR: sudo failed. Configure manually, then re-run PreProcess2PImage.sh:"
+			echo "ERROR: sudo failed. Configure manually, then re-run PreProcess2PImages.sh:"
 			echo "  sudo mkdir -p $SCRATCH_DIR"
 			echo "  Add to /etc/fstab:"
 			echo "    tmpfs	${SCRATCH_DIR}	tmpfs	defaults,size=${SCRATCH_TMPFS_SIZE},mode=0777	0	0"
@@ -326,7 +335,7 @@ _ensure_scratch_tmpfs() {
 	if ! _fstab_has_scratch_mount "$SCRATCH_DIR"; then
 		{
 			echo ""
-			echo "# schollab-pipeline FAST scratch (tmpfs)"
+			echo "# PreProcess2PImages FAST scratch (tmpfs)"
 			echo "tmpfs	${SCRATCH_DIR}	tmpfs	defaults,size=${SCRATCH_TMPFS_SIZE},mode=0777	0	0"
 		} | _sudo_or_die tee -a /etc/fstab >/dev/null
 	fi
@@ -409,7 +418,7 @@ _setup_run() {
 	echo "── FAST scratch tmpfs ─────────────────────────────────"
 	_ensure_scratch_tmpfs
 	echo ""
-	echo "Setup complete. Next: bash PreProcess2PImage.sh"
+	echo "Setup complete. Next: bash PreProcess2PImages.sh"
 }
 
 # ── clean_caiman: remove caiman registration artifacts ────────────────────────
@@ -545,7 +554,7 @@ fi
 
 if [ ! -f "$CAIMAN_PYTHON" ]; then
 	echo "ERROR: caiman python not found at $CAIMAN_PYTHON"
-	echo "  Install envs (bash PreProcess2PImage.sh --setup) or set SCHOLLAB_CONDA_ROOT to your conda prefix."
+	echo "  Install envs (bash PreProcess2PImages.sh --setup) or set SCHOLLAB_CONDA_ROOT to your conda prefix."
 	exit 1
 fi
 
@@ -554,10 +563,10 @@ loginctl enable-linger "$USER"
 
 mkdir -p "$FAST_LOG_DIR"
 
-# FAST scratch tmpfs — disabled: use disk-backed scratch_dir in pipeline_config.json.
+# FAST scratch tmpfs — disabled: use disk-backed scratch_dir in fast/config.json.
 # _ensure_scratch_tmpfs
 
-echo "Starting PreProcess2PImage..."
+echo "Starting PreProcess2PImages..."
 echo "  Caiman python: $CAIMAN_PYTHON"
 echo "  Repo:          $REPO_DIR"
 echo ""
@@ -569,7 +578,7 @@ echo ""
 
 echo ""
 echo "Useful commands:"
-echo "  Follow live output:  bash PreProcess2PImage.sh --attach"
-echo "  Check status:        bash PreProcess2PImage.sh --status"
-echo "  Stop pipeline:       bash PreProcess2PImage.sh --stop"
+echo "  Follow live output:  bash PreProcess2PImages.sh --attach"
+echo "  Check status:        bash PreProcess2PImages.sh --status"
+echo "  Stop pipeline:       bash PreProcess2PImages.sh --stop"
 echo "  Raw journal:         journalctl --user -f -u $UNIT_NAME"
