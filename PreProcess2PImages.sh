@@ -21,7 +21,8 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_NAME="schollab-PreProcess2PImages"
 FAST_LOG_DIR="$REPO_DIR/fast/logs"
-FAST_CONFIG="$REPO_DIR/fast/pipeline_config.json"
+FAST_CONFIG="$REPO_DIR/fast/config.json"
+FAST_CONFIG_LEGACY="$REPO_DIR/fast/pipeline_config.json"
 
 # Conda install prefix (Miniforge vs Miniconda, etc.). Export SCHOLLAB_CONDA_ROOT on hosts
 # where envs live under e.g. ~/miniconda3 — must match registration.py / pipeline_worker.py.
@@ -66,21 +67,31 @@ done
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+_resolve_fast_config() {
+	if [ -f "$FAST_CONFIG" ]; then
+		return 0
+	fi
+	if [ -f "$FAST_CONFIG_LEGACY" ]; then
+		echo "WARNING: Using legacy FAST config path: $FAST_CONFIG_LEGACY" >&2
+		echo "  Rename it to fast/config.json when convenient." >&2
+		FAST_CONFIG="$FAST_CONFIG_LEGACY"
+		return 0
+	fi
+	echo "ERROR: FAST config not found:"
+	echo "  $FAST_CONFIG"
+	echo "  $FAST_CONFIG_LEGACY"
+	exit 1
+}
+
 # scratch_dir only (GUI runs do not update data_folders in config).
 _read_scratch_config() {
-	if [ ! -f "$FAST_CONFIG" ]; then
-		echo "ERROR: pipeline_config.json not found at $FAST_CONFIG"
-		exit 1
-	fi
+	_resolve_fast_config
 	SCRATCH_DIR=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); print(c['scratch_dir'])")
 }
 
 # Legacy full read (unused by --clean; kept for tooling).
 _read_config() {
-	if [ ! -f "$FAST_CONFIG" ]; then
-		echo "ERROR: pipeline_config.json not found at $FAST_CONFIG"
-		exit 1
-	fi
+	_resolve_fast_config
 	SCRATCH_DIR=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); print(c['scratch_dir'])")
 	FOLDERS=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); [print(f) for f in c['data_folders']]")
 }
@@ -109,10 +120,11 @@ PY
 		)
 		echo "── Folder source: sessions from $JOB_FILE ─────────────────────────"
 	else
+		_resolve_fast_config
 		FOLDERS=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); [print(f) for f in c['data_folders']]")
-		echo "WARNING: Using data_folders from pipeline_config.json — may not match GUI-selected sessions." >&2
+		echo "WARNING: Using data_folders from FAST config — may not match GUI-selected sessions." >&2
 		echo "  Prefer: --from-job or pass session paths after -- ." >&2
-		echo "── Folder source: pipeline_config.json data_folders (fallback) ─────────"
+		echo "── Folder source: FAST config data_folders (fallback) ─────────────────"
 	fi
 }
 
@@ -279,14 +291,11 @@ _fstab_has_scratch_mount() {
 	' /etc/fstab 2>/dev/null
 }
 
-# Ensure scratch_dir from pipeline_config.json is a mounted tmpfs (creates dir,
+# Ensure scratch_dir from fast/config.json is a mounted tmpfs (creates dir,
 # appends /etc/fstab once, mounts). Refuses to overlay tmpfs on a non-empty
 # directory that is not already the mount point — avoids hiding existing data.
 _ensure_scratch_tmpfs() {
-	if [ ! -f "$FAST_CONFIG" ]; then
-		echo "ERROR: pipeline_config.json not found at $FAST_CONFIG"
-		exit 1
-	fi
+	_resolve_fast_config
 	local SCRATCH_DIR
 	SCRATCH_DIR=$(python3 -c "import json; print(json.load(open('$FAST_CONFIG'))['scratch_dir'])")
 
@@ -302,7 +311,7 @@ _ensure_scratch_tmpfs() {
 	if [ -d "$SCRATCH_DIR" ] && [ -n "$(ls -A "$SCRATCH_DIR" 2>/dev/null)" ]; then
 		echo "ERROR: scratch_dir exists, is not mounted, and is not empty:"
 		echo "  $SCRATCH_DIR"
-		echo "  Empty it or pick a different scratch_dir in pipeline_config.json"
+		echo "  Empty it or pick a different scratch_dir in fast/config.json"
 		echo "  before mounting tmpfs (would hide existing files)."
 		exit 1
 	fi
@@ -554,7 +563,7 @@ loginctl enable-linger "$USER"
 
 mkdir -p "$FAST_LOG_DIR"
 
-# FAST scratch tmpfs — disabled: use disk-backed scratch_dir in pipeline_config.json.
+# FAST scratch tmpfs — disabled: use disk-backed scratch_dir in fast/config.json.
 # _ensure_scratch_tmpfs
 
 echo "Starting PreProcess2PImages..."

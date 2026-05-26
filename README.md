@@ -9,11 +9,12 @@ PreProcess2PImages/
 ├── caiman/                  CaImAn motion correction
 │   ├── registration.py      Entry point: GUI → job file → systemd service
 │   ├── registration_gui.py  wxPython folder picker + step checkboxes
+│   ├── config.json          CaImAn runtime + motion-correction settings
 │   ├── tif_to_h5.py         TIF stack → HDF5 conversion
 │   └── h5_to_tif.py         HDF5 → TIF utility
 ├── fast/                    FAST denoising
-│   ├── denoising.py         Entry point: reads pipeline_config.json
-│   ├── pipeline_config.json Data folders + hyperparameters
+│   ├── denoising.py         Entry point: reads config.json
+│   ├── config.json          Data folders + hyperparameters
 │   ├── datasets/            PyTorch dataset + augmentation
 │   ├── models/              U-Net architecture
 │   └── utils/               H5/TIFF utilities, config loader
@@ -60,7 +61,7 @@ conda create -n FAST python=3.11 -y        # once
 conda run -n FAST pip install -r fast_pip_requirements.txt
 ```
 
-### FAST scratch directory (`scratch_dir` in `pipeline_config.json`)
+### FAST scratch directory (`scratch_dir` in `fast/config.json`)
 
 FAST uses `scratch_dir` (often `/mnt/fast_tmp`) for fast intermediate I/O. On **`bash PreProcess2PImages.sh --setup`** or the first normal **`bash PreProcess2PImages.sh`** run, the script prompts for **sudo** to:
 
@@ -80,9 +81,9 @@ Each mode **scans disk first**, prints a **single manifest** of paths that exist
 - **Folder list** (precedence):
   1. Paths after **`--`**: `bash PreProcess2PImages.sh --clean_caiman -- /data/session1 /data/session2`
   2. **`--from-job`**: read `sessions` from **`/tmp/pipeline_job.json`** (GUI job file); override path with env **`JOB_FILE`** if needed.
-  3. Else **`data_folders`** in [`fast/pipeline_config.json`](fast/pipeline_config.json) (a **WARNING** is printed — may not match GUI-selected folders).
+  3. Else **`data_folders`** in [`fast/config.json`](fast/config.json) (a **WARNING** is printed — may not match GUI-selected folders).
 
-**`scratch_dir`** for FAST scratch subdirs is always taken from `pipeline_config.json`, even when folders come from the job file.
+**`scratch_dir`** for FAST scratch subdirs is always taken from `fast/config.json`, even when folders come from the job file.
 
 | Mode | Removes (per folder, when present) | Does **not** remove |
 |------|-------------------------------------|---------------------|

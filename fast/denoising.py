@@ -13,7 +13,7 @@
 #     - Input data must contain a 'registered.h5' file (output from motion correction)
 #     - CUDA-compatible GPU is required
 #     - All dependencies from requirements.txt installed
-#     - pipeline_config.json present in the same directory as this script
+#     - config.json present in the same directory as this script
 #     - train.py must use args.results_dir (not train_folder parent) for checkpoint dir
 #     - This script should be run with the FAST environment activated
 #     - Intermediate files go to SCRATCH_DIR (tmpfs) to avoid exFAT I/O stress
@@ -27,7 +27,7 @@
 #     5. Copy example TIFF, delete tmpfs scratch, write completion sentinel
 
 # INPUT:
-#     - pipeline_config.json: data folders, hyperparameters, paths
+#     - config.json: data folders, hyperparameters, paths
 
 # OUTPUT (per folder):
 #     - checkpoint/: Trained model weights and configuration (permanent drive)
@@ -66,11 +66,27 @@ from utils.config import json2args
 from utils.h5_utils import h5_to_tiff, tif_stacks_to_h5
 
 
-# Only hardcoded path — everything else comes from pipeline_config.json
-PIPELINE_CONFIG_PATH = os.path.join(
+FAST_CONFIG_PATH = os.path.join(
+	os.path.dirname(os.path.abspath(__file__)),
+	'config.json'
+)
+LEGACY_FAST_CONFIG_PATH = os.path.join(
 	os.path.dirname(os.path.abspath(__file__)),
 	'pipeline_config.json'
 )
+
+
+def default_fast_config_path() -> str:
+	"""Prefer fast/config.json; tolerate legacy fast/pipeline_config.json during migration."""
+	if os.path.exists(FAST_CONFIG_PATH):
+		return FAST_CONFIG_PATH
+	if os.path.exists(LEGACY_FAST_CONFIG_PATH):
+		print(
+			f"WARNING: Using legacy FAST config path: {LEGACY_FAST_CONFIG_PATH}\n"
+			"  Rename it to fast/config.json when convenient."
+		)
+		return LEGACY_FAST_CONFIG_PATH
+	return FAST_CONFIG_PATH
 
 
 # =============================================================================
@@ -82,10 +98,10 @@ def load_pipeline_config(path: str) -> dict:
 	Load pipeline orchestration config from JSON.
 
 	Separates folder list and runtime parameters from code so denoising.py
-	never needs to be edited for routine runs — only pipeline_config.json does.
+	never needs to be edited for routine runs — only fast/config.json does.
 	"""
 	if not os.path.exists(path):
-		raise FileNotFoundError(f"Pipeline config not found: {path}")
+		raise FileNotFoundError(f"FAST config not found: {path}")
 	with open(path) as f:
 		cfg = json.load(f)
 	required = [
@@ -94,14 +110,14 @@ def load_pipeline_config(path: str) -> dict:
 	]
 	missing = [k for k in required if k not in cfg]
 	if missing:
-		raise KeyError(f"Missing keys in pipeline_config.json: {missing}")
+		raise KeyError(f"Missing keys in FAST config: {missing}")
 	return cfg
 
 
 @dataclass
 class PipelineConfig:
 	"""
-	Runtime configuration loaded from pipeline_config.json.
+	Runtime configuration loaded from fast/config.json.
 
 	Using a dataclass (rather than a raw dict) gives attribute access,
 	type clarity, and a single place to add defaults or validation.
@@ -387,7 +403,7 @@ def step2_train(
 	Train the Unet_Lite denoiser on the first TIFF chunk.
 
 	Uses self-supervised spatiotemporal loss — no clean ground truth needed.
-	Hyperparameters come from PipelineConfig (loaded from pipeline_config.json).
+	Hyperparameters come from PipelineConfig (loaded from fast/config.json).
 	The checkpoint is written to paths.checkpoint on the permanent drive —
 	NOT to tmpfs — so it survives across runs.
 
@@ -398,7 +414,7 @@ def step2_train(
 		with open(cfg.base_config_path, 'r') as f:
 			params = json.load(f)
 
-		# Override userparams.json defaults with pipeline_config.json values
+		# Override userparams.json defaults with fast/config.json values
 		params.update({
 			'train_frames':   cfg.train_frames,
 			'miniBatch_size': cfg.minibatch_size,
@@ -645,8 +661,9 @@ def main():
 	# without modifying this script: python denoising.py --config my_config.json
 	parser = argparse.ArgumentParser(description='FAST denoising pipeline')
 	parser.add_argument(
-		'--config', default=PIPELINE_CONFIG_PATH,
-		help='Path to pipeline_config.json (default: same dir as denoising.py)'
+		'--config',
+		default=default_fast_config_path(),
+		help='Path to FAST config JSON (default: fast/config.json next to denoising.py)'
 	)
 	cli = parser.parse_args()
 

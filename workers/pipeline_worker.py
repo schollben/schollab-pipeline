@@ -41,17 +41,23 @@ def _schollab_conda_root():
 # Direct python path for FAST env — no conda activation needed.
 FAST_PYTHON     = os.path.join(_schollab_conda_root(), 'envs', 'FAST', 'bin', 'python')
 FAST_SCRIPT     = os.path.join(FAST_DIR, 'denoising.py')
-FAST_BASE_CFG   = os.path.join(FAST_DIR, 'pipeline_config.json')
+FAST_BASE_CFG   = os.path.join(FAST_DIR, 'config.json')
+FAST_BASE_CFG_LEGACY = os.path.join(FAST_DIR, 'pipeline_config.json')
 
 
 def load_fast_base_config():
 	"""Load the base FAST config once — per-folder runs override only data_folders."""
-	if not os.path.exists(FAST_BASE_CFG):
+	cfg_path = FAST_BASE_CFG
+	if not os.path.exists(cfg_path) and os.path.exists(FAST_BASE_CFG_LEGACY):
+		cfg_path = FAST_BASE_CFG_LEGACY
+		print(f"WARNING: Using legacy FAST config path: {cfg_path}")
+		print("  Rename it to fast/config.json when convenient.")
+	if not os.path.exists(cfg_path):
 		raise FileNotFoundError(
 			f"FAST base config not found: {FAST_BASE_CFG}\n"
-			f"  Check that fast/pipeline_config.json exists in the repo."
+			f"  Check that fast/config.json exists in the repo."
 		)
-	with open(FAST_BASE_CFG) as f:
+	with open(cfg_path) as f:
 		return json.load(f)
 
 
