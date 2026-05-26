@@ -1,10 +1,41 @@
 import os
 import os.path
+import json
+
+CAIMAN_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+CAIMAN_DEFAULTS = {
+	'n_processes': 4,
+	'threads': {
+		'OMP_NUM_THREADS': 1,
+		'MKL_NUM_THREADS': 1,
+		'OPENBLAS_NUM_THREADS': 1,
+		'NUMEXPR_NUM_THREADS': 1,
+	}
+}
+
+
+def _load_caiman_config():
+	"""Load CaImAn runtime settings before importing NumPy/CaImAn thread libraries."""
+	cfg = dict(CAIMAN_DEFAULTS)
+	cfg['threads'] = dict(CAIMAN_DEFAULTS['threads'])
+	if os.path.exists(CAIMAN_CONFIG_PATH):
+		with open(CAIMAN_CONFIG_PATH, encoding='utf-8') as f:
+			file_cfg = json.load(f)
+		cfg.update({k: v for k, v in file_cfg.items() if k != 'threads'})
+		cfg['threads'].update(file_cfg.get('threads', {}))
+	return cfg
+
+
+CAIMAN_CONFIG = _load_caiman_config()
+
+for _thread_env, _thread_default in CAIMAN_CONFIG.get('threads', {}).items():
+	# Respect admin/user overrides while defaulting to one thread per CaImAn worker.
+	os.environ.setdefault(_thread_env, str(_thread_default))
+
 import cv2
 import math
 import h5py
 import glob
-import json
 import pathlib
 import subprocess
 import numpy as np
@@ -30,6 +61,26 @@ from tif_to_h5 import tif_stacks_to_h5
 from tiff_compat import tiff_writer_append
 
 global mc
+
+
+def _caiman_n_processes():
+	raw = os.environ.get('CAIMAN_N_PROCESSES', CAIMAN_CONFIG.get('n_processes', 4))
+	try:
+		n_processes = int(raw)
+	except (TypeError, ValueError) as exc:
+		raise ValueError(f"CAIMAN_N_PROCESSES must be an integer, got {raw!r}") from exc
+	if n_processes < 1:
+		raise ValueError(f"CAIMAN_N_PROCESSES must be >= 1, got {n_processes}")
+	return n_processes
+
+
+def _caiman_thread_setenv_args():
+	"""Pass thread caps into systemd so the worker sees them before importing NumPy."""
+	args = []
+	for key in sorted(CAIMAN_CONFIG.get('threads', {})):
+		if key in os.environ:
+			args.append(f"--setenv={key}={os.environ[key]}")
+	return args
 
 def _schollab_conda_root():
 	"""
@@ -68,8 +119,10 @@ def register_one_session(parent_dir, mc_dict, keep_memmap, save_sample, sample_n
 
 	opts = params.CNMFParams(params_dict=mc_dict)
 
+	caiman_processes = _caiman_n_processes()
+	print(f"  CaImAn n_processes: {caiman_processes}")
 	c, dview, n_processes = cm.cluster.setup_cluster(
-		backend='local', n_processes=None, single_thread=False)
+		backend='local', n_processes=caiman_processes, single_thread=False)
 	mc = MotionCorrect(fnames, dview=dview, **opts.get_group('motion'))
 
 	mc.motion_correct(save_movie=True)
@@ -246,15 +299,22 @@ if __name__ == '__main__':
 	# Launch workers/pipeline_worker.py as a persistent systemd user service.
 	# Runs under the caiman python env; worker calls FAST via subprocess.
 	# loginctl enable-linger must already be set (done by PreProcess2PImages.sh).
-	subprocess.run([
+	systemd_cmd = [
 		"systemd-run", "--user",
 		f"--unit={UNIT_NAME}",
 		"--description=Schollab caiman+FAST pipeline",
 		f"--setenv=HOME={os.path.expanduser('~')}",
 		# Worker subprocess needs same prefix as GUI so FAST_PYTHON resolves correctly.
 		f"--setenv=SCHOLLAB_CONDA_ROOT={_schollab_conda_root()}",
+	]
+	systemd_cmd.extend(_caiman_thread_setenv_args())
+	if 'CAIMAN_N_PROCESSES' in os.environ:
+		# Keep one-off CLI overrides visible after systemd detaches the worker.
+		systemd_cmd.append(f"--setenv=CAIMAN_N_PROCESSES={os.environ['CAIMAN_N_PROCESSES']}")
+	systemd_cmd.extend([
 		CAIMAN_PYTHON, WORKER_SCRIPT, JOB_PATH
-	], check=True)
+	])
+	subprocess.run(systemd_cmd, check=True)
 
 	print(f"Pipeline launched as systemd service '{UNIT_NAME}'.")
 	print(f"Monitor: journalctl --user -f -u {UNIT_NAME}")

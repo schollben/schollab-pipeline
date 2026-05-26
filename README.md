@@ -9,7 +9,7 @@ PreProcess2PImages/
 ├── caiman/                  CaImAn motion correction
 │   ├── registration.py      Entry point: GUI → job file → systemd service
 │   ├── registration_gui.py  wxPython folder picker + step checkboxes
-│   ├── config.json          CaImAn runtime + motion-correction settings
+│   ├── config.json          CaImAn runtime settings
 │   ├── tif_to_h5.py         TIF stack → HDF5 conversion
 │   └── h5_to_tif.py         HDF5 → TIF utility
 ├── fast/                    FAST denoising
@@ -60,6 +60,32 @@ conda env create -f caiman_conda_env.yml   # or: conda env update -f caiman_cond
 conda create -n FAST python=3.11 -y        # once
 conda run -n FAST pip install -r fast_pip_requirements.txt
 ```
+
+### CaImAn CPU controls (`caiman/config.json`)
+
+CaImAn runtime settings live in [`caiman/config.json`](caiman/config.json). The most important CPU controls are:
+
+- `n_processes`: CaImAn worker process count (default `4`).
+- `threads`: default numerical-library thread caps applied before NumPy/CaImAn imports.
+
+For one-off runs, override process count from the shell:
+
+```bash
+CAIMAN_N_PROCESSES=6 bash PreProcess2PImages.sh
+```
+
+CaImAn thread caps such as `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, and `NUMEXPR_NUM_THREADS` respect existing environment values; otherwise the values in `caiman/config.json` are used.
+
+Only `n_processes` and `threads` are active today; sample-output and motion-parameter config entries are reserved for follow-up cleanup.
+
+### FAST CPU controls (`fast/config.json`)
+
+FAST gets its own subprocess environment from [`fast/config.json`](fast/config.json), so its thread caps can differ from CaImAn:
+
+- `threads`: numerical-library thread caps passed only to the FAST subprocess.
+- `num_workers`: PyTorch data-loading workers; this is separate from BLAS/OpenMP thread caps.
+
+The worker logs the FAST thread environment before launching `fast/denoising.py`, which makes `journalctl --user -u schollab-PreProcess2PImages` useful for checking the active CPU settings.
 
 ### FAST scratch directory (`scratch_dir` in `fast/config.json`)
 
