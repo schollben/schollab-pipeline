@@ -1,25 +1,25 @@
 #!/bin/bash
-# PreProcess2PImage.sh
+# PreProcess2PImages.sh
 # Single entry point for the schollab caiman+FAST pipeline.
 #
 # Usage:
-#   bash PreProcess2PImage.sh                       # launch GUI, start pipeline
-#   bash PreProcess2PImage.sh --attach              # follow live output (journalctl)
-#   bash PreProcess2PImage.sh --status              # service status + last log lines
-#   bash PreProcess2PImage.sh --stop                # stop a running pipeline
-#   bash PreProcess2PImage.sh --clean_caiman        # scan: list CaImAn artifacts (no delete)
-#   bash PreProcess2PImage.sh --clean_caiman --confirm   # scan, prompt, then delete if confirmed
-#   bash PreProcess2PImage.sh --clean_caiman --confirm --yes   # non-interactive delete (scripts)
-#   bash PreProcess2PImage.sh --clean_caiman -- /path/A /path/B   # explicit session folders
-#   bash PreProcess2PImage.sh --clean_caiman --from-job  # use /tmp/pipeline_job.json sessions
-#   bash PreProcess2PImage.sh --clean_fast …          # same -- / --from-job / config fallback
-#   bash PreProcess2PImage.sh --clean_all …
-#   bash PreProcess2PImage.sh --setup                # conda envs (caiman + FAST), linger, scratch tmpfs
+#   bash PreProcess2PImages.sh                       # launch GUI, start pipeline
+#   bash PreProcess2PImages.sh --attach              # follow live output (journalctl)
+#   bash PreProcess2PImages.sh --status              # service status + last log lines
+#   bash PreProcess2PImages.sh --stop                # stop a running pipeline
+#   bash PreProcess2PImages.sh --clean_caiman        # scan: list CaImAn artifacts (no delete)
+#   bash PreProcess2PImages.sh --clean_caiman --confirm   # scan, prompt, then delete if confirmed
+#   bash PreProcess2PImages.sh --clean_caiman --confirm --yes   # non-interactive delete (scripts)
+#   bash PreProcess2PImages.sh --clean_caiman -- /path/A /path/B   # explicit session folders
+#   bash PreProcess2PImages.sh --clean_caiman --from-job  # use /tmp/pipeline_job.json sessions
+#   bash PreProcess2PImages.sh --clean_fast …          # same -- / --from-job / config fallback
+#   bash PreProcess2PImages.sh --clean_all …
+#   bash PreProcess2PImages.sh --setup                # conda envs (caiman + FAST), linger, scratch tmpfs
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UNIT_NAME="schollab-PreProcess2PImage"
+UNIT_NAME="schollab-PreProcess2PImages"
 FAST_LOG_DIR="$REPO_DIR/fast/logs"
 FAST_CONFIG="$REPO_DIR/fast/pipeline_config.json"
 
@@ -312,7 +312,7 @@ _ensure_scratch_tmpfs() {
 	_sudo_or_die() {
 		if ! sudo "$@"; then
 			echo ""
-			echo "ERROR: sudo failed. Configure manually, then re-run PreProcess2PImage.sh:"
+			echo "ERROR: sudo failed. Configure manually, then re-run PreProcess2PImages.sh:"
 			echo "  sudo mkdir -p $SCRATCH_DIR"
 			echo "  Add to /etc/fstab:"
 			echo "    tmpfs	${SCRATCH_DIR}	tmpfs	defaults,size=${SCRATCH_TMPFS_SIZE},mode=0777	0	0"
@@ -326,7 +326,7 @@ _ensure_scratch_tmpfs() {
 	if ! _fstab_has_scratch_mount "$SCRATCH_DIR"; then
 		{
 			echo ""
-			echo "# schollab-pipeline FAST scratch (tmpfs)"
+			echo "# PreProcess2PImages FAST scratch (tmpfs)"
 			echo "tmpfs	${SCRATCH_DIR}	tmpfs	defaults,size=${SCRATCH_TMPFS_SIZE},mode=0777	0	0"
 		} | _sudo_or_die tee -a /etc/fstab >/dev/null
 	fi
@@ -409,7 +409,7 @@ _setup_run() {
 	echo "── FAST scratch tmpfs ─────────────────────────────────"
 	_ensure_scratch_tmpfs
 	echo ""
-	echo "Setup complete. Next: bash PreProcess2PImage.sh"
+	echo "Setup complete. Next: bash PreProcess2PImages.sh"
 }
 
 # ── clean_caiman: remove caiman registration artifacts ────────────────────────
@@ -545,7 +545,7 @@ fi
 
 if [ ! -f "$CAIMAN_PYTHON" ]; then
 	echo "ERROR: caiman python not found at $CAIMAN_PYTHON"
-	echo "  Install envs (bash PreProcess2PImage.sh --setup) or set SCHOLLAB_CONDA_ROOT to your conda prefix."
+	echo "  Install envs (bash PreProcess2PImages.sh --setup) or set SCHOLLAB_CONDA_ROOT to your conda prefix."
 	exit 1
 fi
 
@@ -557,7 +557,7 @@ mkdir -p "$FAST_LOG_DIR"
 # FAST scratch tmpfs — disabled: use disk-backed scratch_dir in pipeline_config.json.
 # _ensure_scratch_tmpfs
 
-echo "Starting PreProcess2PImage..."
+echo "Starting PreProcess2PImages..."
 echo "  Caiman python: $CAIMAN_PYTHON"
 echo "  Repo:          $REPO_DIR"
 echo ""
@@ -569,7 +569,7 @@ echo ""
 
 echo ""
 echo "Useful commands:"
-echo "  Follow live output:  bash PreProcess2PImage.sh --attach"
-echo "  Check status:        bash PreProcess2PImage.sh --status"
-echo "  Stop pipeline:       bash PreProcess2PImage.sh --stop"
+echo "  Follow live output:  bash PreProcess2PImages.sh --attach"
+echo "  Check status:        bash PreProcess2PImages.sh --status"
+echo "  Stop pipeline:       bash PreProcess2PImages.sh --stop"
 echo "  Raw journal:         journalctl --user -f -u $UNIT_NAME"

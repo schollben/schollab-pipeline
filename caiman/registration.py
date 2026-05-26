@@ -47,7 +47,7 @@ def _schollab_conda_root():
 REPO_DIR      = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKER_SCRIPT = os.path.join(REPO_DIR, 'workers', 'pipeline_worker.py')
 CAIMAN_PYTHON = os.path.join(_schollab_conda_root(), 'envs', 'caiman', 'bin', 'python')
-UNIT_NAME     = 'schollab-pipeline'
+UNIT_NAME     = 'schollab-PreProcess2PImages'
 JOB_PATH      = '/tmp/pipeline_job.json'
 
 
@@ -240,7 +240,7 @@ if __name__ == '__main__':
 
 	# Launch workers/pipeline_worker.py as a persistent systemd user service.
 	# Runs under the caiman python env; worker calls FAST via subprocess.
-	# loginctl enable-linger must already be set (done by pipeline.sh).
+	# loginctl enable-linger must already be set (done by PreProcess2PImages.sh).
 	subprocess.run([
 		"systemd-run", "--user",
 		f"--unit={UNIT_NAME}",
