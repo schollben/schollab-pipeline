@@ -1,6 +1,6 @@
 {
-    "fast_dir": "/home/schollab-gaga/Documents/FAST/",
-    "scratch_dir": "/home/schollab-gaga/Documents/scratch/",
+    "fast_dir": "$HOME/Documents/FAST/",
+    "scratch_dir": "$HOME/Documents/scratch/",
     "skip_training": false,
     "train_frames": 2000,
     "minibatch_size": 16,

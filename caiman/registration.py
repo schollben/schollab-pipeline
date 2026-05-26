@@ -82,6 +82,15 @@ def _caiman_thread_setenv_args():
 			args.append(f"--setenv={key}={os.environ[key]}")
 	return args
 
+
+def _fast_path_setenv_args():
+	"""Keep FAST path overrides visible after systemd detaches the worker."""
+	args = []
+	for key in ('FAST_DIR', 'FAST_SCRATCH_DIR'):
+		if key in os.environ:
+			args.append(f"--setenv={key}={os.environ[key]}")
+	return args
+
 def _schollab_conda_root():
 	"""
 	Directory that contains bin/conda and envs/{caiman,FAST}.
@@ -357,6 +366,7 @@ if __name__ == '__main__':
 		f"--setenv=SCHOLLAB_CONDA_ROOT={_schollab_conda_root()}",
 	]
 	systemd_cmd.extend(_caiman_thread_setenv_args())
+	systemd_cmd.extend(_fast_path_setenv_args())
 	if 'CAIMAN_N_PROCESSES' in os.environ:
 		# Keep one-off CLI overrides visible after systemd detaches the worker.
 		systemd_cmd.append(f"--setenv=CAIMAN_N_PROCESSES={os.environ['CAIMAN_N_PROCESSES']}")

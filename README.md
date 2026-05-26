@@ -89,7 +89,14 @@ The worker logs the FAST thread environment before launching `fast/denoising.py`
 
 ### FAST scratch directory (`scratch_dir` in `fast/config.json`)
 
-FAST uses `scratch_dir` (often `/mnt/fast_tmp`) for fast intermediate I/O. On **`bash PreProcess2PImages.sh --setup`** or the first normal **`bash PreProcess2PImages.sh`** run, the script prompts for **sudo** to:
+FAST expands `$HOME` / `~` in `fast_dir` and `scratch_dir`, so the default config follows the current Linux user instead of a hardcoded lab account. Override machine-specific locations when needed:
+
+```bash
+export FAST_DIR="$HOME/Documents/FAST"
+export FAST_SCRATCH_DIR="$HOME/Documents/scratch"
+```
+
+FAST uses `scratch_dir` (or `FAST_SCRATCH_DIR`) for fast intermediate I/O. On **`bash PreProcess2PImages.sh --setup`** or the first normal **`bash PreProcess2PImages.sh`** run, the script prompts for **sudo** to:
 
 - create the mount point directory,
 - append a **tmpfs** line to `/etc/fstab` (if not already present),
