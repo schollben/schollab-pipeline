@@ -1,5 +1,5 @@
 {
-    "n_processes": 4,
+    "n_processes": 2,
     "save_sample": true,
     "sample_frames": 4000,
     "threads": {
