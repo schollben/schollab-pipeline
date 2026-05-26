@@ -3,6 +3,7 @@
     "scratch_dir": "$HOME/Documents/scratch/",
     "skip_training": false,
     "train_frames": 2000,
+    "tiff_chunk_size": 1000,
     "minibatch_size": 16,
     "batch_size": 1,
     "num_workers": 16,

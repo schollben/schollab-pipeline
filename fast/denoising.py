@@ -105,7 +105,7 @@ def load_pipeline_config(path: str) -> dict:
 	with open(path) as f:
 		cfg = json.load(f)
 	required = [
-		'fast_dir', 'scratch_dir', 'skip_training', 'train_frames',
+		'fast_dir', 'scratch_dir', 'skip_training', 'train_frames', 'tiff_chunk_size',
 		'minibatch_size', 'batch_size', 'num_workers', 'epochs', 'data_folders'
 	]
 	missing = [k for k in required if k not in cfg]
@@ -132,6 +132,7 @@ class PipelineConfig:
 	scratch_dir:      str   # tmpfs mount — intermediate files live here, not on exFAT
 	skip_training:    bool
 	train_frames:     int
+	tiff_chunk_size:  int
 	minibatch_size:   int
 	batch_size:       int
 	num_workers:      int
@@ -151,6 +152,7 @@ class PipelineConfig:
 			scratch_dir      = scratch_dir,
 			skip_training    = cfg['skip_training'],
 			train_frames     = cfg['train_frames'],
+			tiff_chunk_size  = cfg['tiff_chunk_size'],
 			minibatch_size   = cfg['minibatch_size'],
 			batch_size       = cfg['batch_size'],
 			num_workers      = cfg['num_workers'],
@@ -246,6 +248,7 @@ def log_startup_info(logger: logging.Logger, log_path: str, cfg: PipelineConfig)
 	logger.info(f"FAST Pipeline  |  log: {log_path}")
 	logger.info(
 		f"Config: EPOCHS={cfg.epochs} TRAIN_FRAMES={cfg.train_frames} "
+		f"TIFF_CHUNK_SIZE={cfg.tiff_chunk_size} "
 		f"MINIBATCH={cfg.minibatch_size} WORKERS={cfg.num_workers} "
 		f"SKIP_TRAINING={cfg.skip_training} SCRATCH={cfg.scratch_dir}"
 	)
@@ -382,7 +385,7 @@ def setup_cuda():
 # =============================================================================
 
 def step1_export_tiffs(
-	paths: FolderPaths, logger: logging.Logger, monitor: MemoryMonitor
+	paths: FolderPaths, cfg: PipelineConfig, logger: logging.Logger, monitor: MemoryMonitor
 ):
 	"""
 	Convert registered.h5 to TIFF chunks and copy first chunk to training/.
@@ -395,7 +398,8 @@ def step1_export_tiffs(
 	with log_step(logger, monitor, 'step1_tiff_export'):
 		_reset_dir(paths.registered, logger)
 		_reset_dir(paths.training, logger)
-		h5_to_tiff(paths.h5, output_dir=paths.registered)
+		logger.info(f"  TIFF chunk size: {cfg.tiff_chunk_size} frames")
+		h5_to_tiff(paths.h5, output_dir=paths.registered, chunk_size=cfg.tiff_chunk_size)
 
 		tif_files = sorted(glob.glob(os.path.join(paths.registered, '*.tif')))
 		if not tif_files:
@@ -631,7 +635,7 @@ def process_folder(
 	skip_training     = cfg.skip_training or (checkpoint_config is not None)
 
 	if not skip_training:
-		step1_export_tiffs(paths, logger, monitor)
+		step1_export_tiffs(paths, cfg, logger, monitor)
 		step2_train(paths, cfg, logger, monitor)
 		checkpoint_config = _find_latest_checkpoint_config(paths.checkpoint)
 	else:
@@ -646,7 +650,7 @@ def process_folder(
 				logger.warning("  registered/ exists but is EMPTY — re-running Step 1")
 			else:
 				logger.info("  registered/ missing — re-running Step 1")
-			step1_export_tiffs(paths, logger, monitor)
+			step1_export_tiffs(paths, cfg, logger, monitor)
 
 	# Guard: fail loudly if no checkpoint was found or written
 	if checkpoint_config is None:
