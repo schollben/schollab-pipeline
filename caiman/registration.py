@@ -147,29 +147,30 @@ def _write_registered_h5(parent_dir, source_h5, mmap_h5, numframes, save_sample,
 	os.replace(source_h5, registered_h5)
 	datafile = h5py.File(registered_h5, 'w')
 	frames_written = 0
+	mov = None
 
 	try:
 		datafile.create_dataset("mov", (numframes, 512, 512))
 		print(f"  Rewriting corrected H5: {registered_h5} ({numframes} frames)")
+		# Load the CaImAn mmap once; chunk slices avoid repeatedly reopening the same file.
+		mov = cm.load(mmap_h5)
 		for i in range(0, math.floor(numframes / 1000)):
-			mov = cm.load(mmap_h5)
 			temp_data = np.array(mov[frames_written:frames_written + 1000, :, :])
 			actual_frames = temp_data.shape[0]
 			datafile["mov"][frames_written:frames_written + actual_frames, :, :] = temp_data
 			frames_written += actual_frames
-			del mov
 
 		if numframes > frames_written:
-			mov = cm.load(mmap_h5)
 			temp_data = np.array(mov[frames_written:mov.shape[0], :, :])
 			datafile["mov"][frames_written:mov.shape[0], :, :] = temp_data
 			frames_written = mov.shape[0]
-			del mov
 			del temp_data
 
 		print(f"  Rewrote corrected H5 frames: {frames_written}")
 		_write_sample_tiff(parent_dir, sample_name, datafile, numframes, save_sample)
 	finally:
+		if mov is not None:
+			del mov
 		datafile.close()
 		print(f"  Closed H5 file: {registered_h5}")
 
