@@ -65,7 +65,7 @@ conda run -n FAST pip install -r fast_pip_requirements.txt
 
 CaImAn runtime settings live in [`caiman/config.json`](caiman/config.json). The most important CPU controls are:
 
-- `n_processes`: CaImAn worker process count (default `4`).
+- `n_processes`: CaImAn worker process count (default `2`; increase only if RAM/swap stay stable).
 - `threads`: default numerical-library thread caps applied before NumPy/CaImAn imports.
 
 For one-off runs, override process count from the shell:
