@@ -114,6 +114,12 @@ def load_pipeline_config(path: str) -> dict:
 	return cfg
 
 
+def resolve_config_path(value: Optional[str], env_name: str, default: str) -> str:
+	"""Resolve machine-local paths from env/config without hardcoding one user home."""
+	raw = os.environ.get(env_name) or value or default
+	return os.path.abspath(os.path.expanduser(os.path.expandvars(raw)))
+
+
 @dataclass
 class PipelineConfig:
 	"""
@@ -134,16 +140,22 @@ class PipelineConfig:
 
 	@staticmethod
 	def from_dict(cfg: dict) -> 'PipelineConfig':
+		fast_dir = resolve_config_path(
+			cfg.get('fast_dir'), 'FAST_DIR', os.path.join('~', 'Documents', 'FAST')
+		)
+		scratch_dir = resolve_config_path(
+			cfg.get('scratch_dir'), 'FAST_SCRATCH_DIR', os.path.join('~', 'Documents', 'scratch')
+		)
 		return PipelineConfig(
-			fast_dir         = cfg['fast_dir'],
-			scratch_dir      = cfg['scratch_dir'],
+			fast_dir         = fast_dir,
+			scratch_dir      = scratch_dir,
 			skip_training    = cfg['skip_training'],
 			train_frames     = cfg['train_frames'],
 			minibatch_size   = cfg['minibatch_size'],
 			batch_size       = cfg['batch_size'],
 			num_workers      = cfg['num_workers'],
 			epochs           = cfg['epochs'],
-			base_config_path = os.path.join(cfg['fast_dir'], 'userparams.json'),
+			base_config_path = os.path.join(fast_dir, 'userparams.json'),
 		)
 
 

@@ -83,16 +83,34 @@ _resolve_fast_config() {
 	exit 1
 }
 
+_fast_scratch_dir() {
+	_resolve_fast_config
+	FAST_CONFIG_PATH="$FAST_CONFIG" python3 - <<'PY'
+import json
+import os
+
+with open(os.environ['FAST_CONFIG_PATH']) as f:
+	cfg = json.load(f)
+
+# Match fast/denoising.py: env override, then config value, then Linux user default.
+raw = (
+	os.environ.get('FAST_SCRATCH_DIR')
+	or cfg.get('scratch_dir')
+	or os.path.join('~', 'Documents', 'scratch')
+)
+print(os.path.abspath(os.path.expanduser(os.path.expandvars(raw))))
+PY
+}
+
 # scratch_dir only (GUI runs do not update data_folders in config).
 _read_scratch_config() {
-	_resolve_fast_config
-	SCRATCH_DIR=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); print(c['scratch_dir'])")
+	SCRATCH_DIR=$(_fast_scratch_dir)
 }
 
 # Legacy full read (unused by --clean; kept for tooling).
 _read_config() {
 	_resolve_fast_config
-	SCRATCH_DIR=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); print(c['scratch_dir'])")
+	SCRATCH_DIR=$(_fast_scratch_dir)
 	FOLDERS=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); [print(f) for f in c['data_folders']]")
 }
 
@@ -295,9 +313,8 @@ _fstab_has_scratch_mount() {
 # appends /etc/fstab once, mounts). Refuses to overlay tmpfs on a non-empty
 # directory that is not already the mount point — avoids hiding existing data.
 _ensure_scratch_tmpfs() {
-	_resolve_fast_config
 	local SCRATCH_DIR
-	SCRATCH_DIR=$(python3 -c "import json; print(json.load(open('$FAST_CONFIG'))['scratch_dir'])")
+	SCRATCH_DIR=$(_fast_scratch_dir)
 
 	if mountpoint -q "$SCRATCH_DIR" 2>/dev/null; then
 		if [ ! -w "$SCRATCH_DIR" ]; then
