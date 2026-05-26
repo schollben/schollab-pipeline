@@ -102,6 +102,107 @@ UNIT_NAME     = 'schollab-PreProcess2PImages'
 JOB_PATH      = '/tmp/pipeline_job.json'
 
 
+def _run_motion_correction(parent_dir, fnames, opts, mc_dict):
+	caiman_processes = _caiman_n_processes()
+	print(f"  CaImAn n_processes: {caiman_processes}")
+	c, dview, n_processes = cm.cluster.setup_cluster(
+		backend='local', n_processes=caiman_processes, single_thread=False)
+	try:
+		print(f"  CaImAn motion correction starting: {fnames[0]}")
+		mc = MotionCorrect(fnames, dview=dview, **opts.get_group('motion'))
+		mc.motion_correct(save_movie=True)
+		print(f"  CaImAn motion correction finished: {parent_dir}")
+		return _save_motion_outputs(parent_dir, mc, mc_dict)
+	finally:
+		# Always tear down workers; leaked clusters can keep CPUs busy after failures.
+		try:
+			cm.stop_server(dview=dview)
+			print("  CaImAn cluster stopped.")
+		except Exception as exc:
+			print(f"  WARNING: failed to stop CaImAn cluster cleanly: {exc}")
+
+
+def _save_motion_outputs(parent_dir, mc, mc_dict):
+	if mc_dict['pw_rigid']:
+		numframes = len(mc.x_shifts_els)
+		np.savetxt(os.path.join(parent_dir, 'nonrigid_x_shifts.csv'), mc.x_shifts_els, delimiter=',')
+		np.savetxt(os.path.join(parent_dir, 'nonrigid_y_shifts.csv'), mc.y_shifts_els, delimiter=',')
+	else:
+		numframes = len(mc.shifts_rig)
+		np.savetxt(os.path.join(parent_dir, 'rigid_shifts.csv'), mc.shifts_rig, delimiter=',')
+
+	fnames_new = mc.mmap_file
+	if not fnames_new:
+		raise RuntimeError(
+			"Motion correction returned no memmap paths (mc.mmap_file empty). "
+			"Check CaImAn version, input shape, and disk space."
+		)
+	print(f"  CaImAn memmap output: {fnames_new[0]}")
+	return numframes, fnames_new
+
+
+def _write_registered_h5(parent_dir, source_h5, mmap_h5, numframes, save_sample, sample_name):
+	# Rename unregistered.h5 -> registered.h5 before writing corrected frames.
+	registered_h5 = os.path.join(parent_dir, 'registered.h5')
+	os.replace(source_h5, registered_h5)
+	datafile = h5py.File(registered_h5, 'w')
+	frames_written = 0
+
+	try:
+		datafile.create_dataset("mov", (numframes, 512, 512))
+		print(f"  Rewriting corrected H5: {registered_h5} ({numframes} frames)")
+		for i in range(0, math.floor(numframes / 1000)):
+			mov = cm.load(mmap_h5)
+			temp_data = np.array(mov[frames_written:frames_written + 1000, :, :])
+			actual_frames = temp_data.shape[0]
+			datafile["mov"][frames_written:frames_written + actual_frames, :, :] = temp_data
+			frames_written += actual_frames
+			del mov
+
+		if numframes > frames_written:
+			mov = cm.load(mmap_h5)
+			temp_data = np.array(mov[frames_written:mov.shape[0], :, :])
+			datafile["mov"][frames_written:mov.shape[0], :, :] = temp_data
+			frames_written = mov.shape[0]
+			del mov
+			del temp_data
+
+		print(f"  Rewrote corrected H5 frames: {frames_written}")
+		_write_sample_tiff(parent_dir, sample_name, datafile, numframes, save_sample)
+	finally:
+		datafile.close()
+		print(f"  Closed H5 file: {registered_h5}")
+
+
+def _write_sample_tiff(parent_dir, sample_name, datafile, numframes, save_sample):
+	if not save_sample:
+		print("  Sample TIFF disabled.")
+		return
+
+	sample_frames = min(4000, numframes)
+	sample_path = os.path.join(parent_dir, sample_name)
+	print(f"  Writing sample TIFF: {sample_path} ({sample_frames} frames)")
+	with tifffile.TiffWriter(sample_path, bigtiff=False, imagej=False) as tif:
+		for i in range(0, sample_frames):
+			curfr = datafile["mov"][i,:,:].astype(np.int16)
+			tiff_writer_append(tif, curfr, contiguous=False)
+	print(f"  Wrote sample TIFF: {sample_path}")
+
+
+def _cleanup_memmaps(fnames_new, keep_memmap):
+	if keep_memmap or not fnames_new:
+		return
+
+	print(f"  Removing CaImAn memmap file(s): {len(fnames_new)}")
+	for fname in fnames_new:
+		if os.path.exists(fname):
+			try:
+				os.remove(fname)
+				print(f"  Removed memmap: {fname}")
+			except OSError as exc:
+				print(f"  WARNING: failed to remove memmap {fname}: {exc}")
+
+
 def register_one_session(parent_dir, mc_dict, keep_memmap, save_sample, sample_name):
 	# Prefer unregistered.h5 — glob *registered.h5 sorts registered.h5 before unregistered.h5
 	# and would run motion correction on the wrong file when both exist.
@@ -116,68 +217,15 @@ def register_one_session(parent_dir, mc_dict, keep_memmap, save_sample, sample_n
 		)
 	mc_dict['fnames'] = fnames
 	mc_dict['upsample_factor_grid'] = 8
-
 	opts = params.CNMFParams(params_dict=mc_dict)
+	fnames_new = []
 
-	caiman_processes = _caiman_n_processes()
-	print(f"  CaImAn n_processes: {caiman_processes}")
-	c, dview, n_processes = cm.cluster.setup_cluster(
-		backend='local', n_processes=caiman_processes, single_thread=False)
-	mc = MotionCorrect(fnames, dview=dview, **opts.get_group('motion'))
-
-	mc.motion_correct(save_movie=True)
-
-	if mc_dict['pw_rigid']:
-		numframes = len(mc.x_shifts_els)
-		np.savetxt(os.path.join(parent_dir, 'nonrigid_x_shifts.csv'), mc.x_shifts_els, delimiter=',')
-		np.savetxt(os.path.join(parent_dir, 'nonrigid_y_shifts.csv'), mc.y_shifts_els, delimiter=',')
-	else:
-		numframes = len(mc.shifts_rig)
-		np.savetxt(os.path.join(parent_dir, 'rigid_shifts.csv'), mc.shifts_rig, delimiter=',')
-
-	fnames_new = mc.mmap_file
-	if not fnames_new:
-		cm.stop_server(dview=dview)
-		raise RuntimeError(
-			"Motion correction returned no memmap paths (mc.mmap_file empty). "
-			"Check CaImAn version, input shape, and disk space."
-		)
-
-	# Rename unregistered.h5 → registered.h5 and write corrected frames into it
-	os.replace(fnames[0], os.path.join(parent_dir, 'registered.h5'))
-	datafile = h5py.File(os.path.join(parent_dir, 'registered.h5'), 'w')
-	datafile.create_dataset("mov", (numframes, 512, 512))
-
-	frames_written = 0
-
-	for i in range(0, math.floor(numframes / 1000)):
-		mov = cm.load(fnames_new[0])
-		temp_data = np.array(mov[frames_written:frames_written + 1000, :, :])
-		actual_frames = temp_data.shape[0]
-		datafile["mov"][frames_written:frames_written + actual_frames, :, :] = temp_data
-		frames_written += actual_frames
-		del mov
-
-	if numframes > frames_written:
-		mov = cm.load(fnames_new[0])
-		temp_data = np.array(mov[frames_written:mov.shape[0], :, :])
-		datafile["mov"][frames_written:mov.shape[0], :, :] = temp_data
-		del mov
-		del temp_data
-
-	cm.stop_server(dview=dview)
-
-	if not keep_memmap:
-		for i in range(0, len(fnames_new)):
-			os.remove(fnames_new[i])
-
-	if save_sample:
-		with tifffile.TiffWriter(os.path.join(parent_dir, sample_name), bigtiff=False, imagej=False) as tif:
-			for i in range(0, min(4000, numframes)):
-				curfr = datafile["mov"][i,:,:].astype(np.int16)
-				tiff_writer_append(tif, curfr, contiguous=False)
-
-	datafile.close()
+	try:
+		numframes, fnames_new = _run_motion_correction(parent_dir, fnames, opts, mc_dict)
+		_write_registered_h5(parent_dir, fnames[0], fnames_new[0], numframes, save_sample, sample_name)
+	finally:
+		# Memmaps are large temporary files; clean them even when H5/sample writing fails.
+		_cleanup_memmaps(fnames_new, keep_memmap)
 
 
 def register_bulk(sessions_to_run, process_selections):
