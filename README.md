@@ -108,6 +108,125 @@ Tune the RAM cap by editing `SCRATCH_TMPFS_SIZE` at the top of `PreProcess2PImag
 
 **Note:** `bash PreProcess2PImages.sh` (GUI start) may have tmpfs setup commented out in favor of a disk-backed `scratch_dir`; **`--setup`** still configures tmpfs if you use that workflow. Check comments at the bottom of [`PreProcess2PImages.sh`](PreProcess2PImages.sh).
 
+## Performance tuning guide
+
+Choose settings from dataset size, host RAM/CPU/GPU, and how much swap pressure you can tolerate. Edit [`caiman/config.json`](caiman/config.json) and [`fast/config.json`](fast/config.json), or use the runtime overrides below for one-off runs.
+
+### Quick machine check
+
+```bash
+free -h          # RAM + swap
+nproc            # logical CPUs
+nvidia-smi       # GPU (FAST needs CUDA)
+df -h /mnt/bigdata "$HOME/Documents/scratch"
+```
+
+| Host RAM | Typical safe starting point |
+|---|---|
+| 32–64 GB | Profile A (`n_processes=2`, `h5_write_batch_frames=128`) |
+| 64–128 GB | Profile B (`n_processes=4`, `h5_write_batch_frames=256`) |
+| 128+ GB | Profile C only after stable test runs |
+
+Keep `threads.* = 1` in both configs unless you deliberately want more BLAS parallelism per process (usually increases RAM and swap).
+
+### File-size tiers (rule of thumb)
+
+Assume 512×512 `uint16` frames unless your data differs.
+
+| Dataset shape | Approx frames | CaImAn (2 workers) | FAST (GPU) | Notes |
+|---|---|---|---|---|
+| Small (1–5 TIFFs, ~1k frames each) | ~1k–5k | ~5–20 min | ~10–40 min | Use for config validation |
+| Medium (10–30 TIFFs, ~1k frames) | ~10k–30k | ~20–50 min | ~30–90 min | Typical lab session |
+| Large (40+ TIFFs, ~1k frames) | ~40k+ | ~45–120 min | ~1–4+ h | Watch swap; prefer Profile A first |
+
+Memory intuition: one 1000-frame 512×512 stack is ~0.5 GB when fully loaded. Peak RAM spikes usually come from full-stack loads (CaImAn rewrite, FAST Step 3/4), not from raw TIFF count alone. Lower `tiff_chunk_size` and `h5_write_batch_frames` before raising `n_processes`.
+
+### Recommended profiles
+
+**Profile A — safe / low memory** (swap fills, `systemd-oomd` kills, or first run on a new host)
+
+| Setting | Value |
+|---|---|
+| `caiman` → `n_processes` | `2` |
+| `fast` → `tiff_chunk_size` | `1000` (try `500` if Step 3 OOMs) |
+| `fast` → `h5_write_batch_frames` | `128` (try `64` if Step 4 OOMs) |
+| `fast` → `num_workers` | `8` |
+| `fast` → `epochs` | `25` |
+
+**Profile B — balanced** (64–128 GB RAM, stable swap)
+
+| Setting | Value |
+|---|---|
+| `caiman` → `n_processes` | `4` |
+| `fast` → `tiff_chunk_size` | `1000` |
+| `fast` → `h5_write_batch_frames` | `256` |
+| `fast` → `num_workers` | `16` |
+
+**Profile C — high throughput** (128+ GB RAM, low swap on two test folders)
+
+| Setting | Value |
+|---|---|
+| `caiman` → `n_processes` | `6–8` |
+| `fast` → `h5_write_batch_frames` | `512` |
+| `fast` → `num_workers` | `16` |
+
+### Scratch and I/O
+
+| Situation | Recommendation |
+|---|---|
+| Fast local SSD/NVMe for scratch | Set `scratch_dir` to that path, or `export FAST_SCRATCH_DIR=...` |
+| tmpfs via `--setup` | Good for intermediate TIFF/H5 I/O; size is capped by `SCRATCH_TMPFS_SIZE` in `PreProcess2PImages.sh` — do not make tmpfs larger than RAM you can spare |
+| Scratch on same disk as huge datasets | Slower but safe; prefer smaller `h5_write_batch_frames` if I/O is the bottleneck |
+| Rerun with valid checkpoint | `"skip_training": true` in `fast/config.json` saves training time |
+
+### Config knobs (summary)
+
+| Knob | Where | Effect | Increase when… | Decrease when… |
+|---|---|---|---|---|
+| `n_processes` / `CAIMAN_N_PROCESSES` | CaImAn | Parallel motion correction | Large host, low swap | Swap pressure, OOM |
+| `save_sample` / `sample_frames` | CaImAn | Preview TIFF export | Debugging | Extra disk/time |
+| `tiff_chunk_size` | FAST | Frames per inference stack | — | Step 3 OOM or high swap |
+| `h5_write_batch_frames` | FAST | Step 4 merge batch size | Stable host, fast Step 4 | Step 4 OOM after inference |
+| `num_workers` | FAST | DataLoader parallelism | Large training sets | Memory pressure |
+| `epochs` | FAST | Training length | Quality matters more than time | Quick iteration |
+| `skip_training` | FAST | Skip training, reuse checkpoint | Valid checkpoint for this data | Model mismatch risk |
+| `threads` (both configs) | CaImAn / FAST | BLAS thread caps per subprocess | Rarely | Almost always keep at `1` |
+
+### Runtime overrides (no file edit)
+
+```bash
+export SCHOLLAB_CONDA_ROOT="$HOME/miniconda3"   # if not using ~/miniforge3
+export CAIMAN_N_PROCESSES=2
+export FAST_DIR="$HOME/Documents/FAST"
+export FAST_SCRATCH_DIR="$HOME/Documents/scratch"
+```
+
+### Symptoms → what to change
+
+| Symptom | Likely stage | Try first |
+|---|---|---|
+| Swap hits 100% during CaImAn | Motion correction / H5 rewrite | `CAIMAN_N_PROCESSES=2`, keep `threads=1` |
+| `oomd` during FAST inference | Step 3 | Lower `tiff_chunk_size` (e.g. `500`) |
+| Inference finishes, then OOM | Step 4 | Lower `h5_write_batch_frames` (e.g. `64`) |
+| Run completes but very slow | I/O or oversubscribed CPU | Check scratch path; avoid raising both `n_processes` and `num_workers` at once |
+| Need faster rerun on same data | Training | `skip_training: true` if checkpoint is valid |
+
+### Logs and completion
+
+```bash
+bash PreProcess2PImages.sh --attach
+journalctl --user -u schollab-PreProcess2PImages -f
+```
+
+Healthy markers: CaImAn `motion correction starting/finished`, FAST `START`/`DONE step4_h5_export`, `Written: .../_fast_complete`, `pipeline_worker: all folders complete`. FAST `print` output can appear out of order in the journal due to buffering — use stage log lines above for progress.
+
+### Tuning workflow
+
+1. Pick one representative folder (medium size if possible).
+2. Run Profile A with `--attach`.
+3. If swap stays manageable, step up to Profile B on the next folder.
+4. Only use Profile C after two consecutive successful runs with low swap.
+
 ### Cleanup (`--clean_caiman`, `--clean_fast`, `--clean_all`)
 
 Each mode **scans disk first**, prints a **single manifest** of paths that exist and would be removed, then exits unless you also pass **`--confirm`**.
