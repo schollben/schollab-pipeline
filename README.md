@@ -85,6 +85,7 @@ FAST gets its own subprocess environment from [`fast/config.json`](fast/config.j
 - `threads`: numerical-library thread caps passed only to the FAST subprocess.
 - `num_workers`: PyTorch data-loading workers; this is separate from BLAS/OpenMP thread caps.
 - `tiff_chunk_size`: frames per TIFF stack used for FAST inference. Lower this if `systemd-oomd` kills FAST during `step3_inference`.
+- `h5_write_batch_frames`: frames loaded per batch when merging FAST result TIFFs into `inference.h5` in Step 4 (default `128`).
 
 The worker logs the FAST thread environment before launching `fast/denoising.py`, which makes `journalctl --user -u schollab-PreProcess2PImages` useful for checking the active CPU settings.
 
