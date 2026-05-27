@@ -523,6 +523,16 @@ def step3_inference(
 		if os.path.exists(tmp_config):
 			os.remove(tmp_config)
 
+		# Step 4 (TIFF->H5) can be memory-heavy; proactively release Step 3 references first.
+		del reg_tifs
+		del result_tifs
+		del test_params
+		del args
+		gc.collect()
+		if torch.cuda.is_available():
+			torch.cuda.empty_cache()
+		logger.info("  Released inference memory before step4_h5_export")
+
 
 def step4_export_h5(
 	paths: FolderPaths, logger: logging.Logger, monitor: MemoryMonitor
@@ -659,6 +669,10 @@ def process_folder(
 		)
 
 	step3_inference(paths, checkpoint_config, logger, monitor)
+	# Keep Step 4 isolated from lingering Python/CUDA references from Step 3.
+	gc.collect()
+	if torch.cuda.is_available():
+		torch.cuda.empty_cache()
 	step4_export_h5(paths, logger, monitor)
 	step5_cleanup(paths, logger, monitor)
 
