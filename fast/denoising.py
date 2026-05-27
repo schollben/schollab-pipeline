@@ -44,8 +44,10 @@
 import argparse
 import gc
 import glob
+import h5py
 import json
 import logging
+import numpy as np
 import os
 import shutil
 import signal
@@ -58,12 +60,13 @@ from dataclasses import dataclass
 from typing import Optional
 
 import psutil
+import tifffile
 import torch
 
 from train import goTraining
 from test import goTesting
 from utils.config import json2args
-from utils.h5_utils import h5_to_tiff, tif_stacks_to_h5
+from utils.h5_utils import h5_to_tiff
 
 
 FAST_CONFIG_PATH = os.path.join(
@@ -106,7 +109,7 @@ def load_pipeline_config(path: str) -> dict:
 		cfg = json.load(f)
 	required = [
 		'fast_dir', 'scratch_dir', 'skip_training', 'train_frames', 'tiff_chunk_size',
-		'minibatch_size', 'batch_size', 'num_workers', 'epochs', 'data_folders'
+		'h5_write_batch_frames', 'minibatch_size', 'batch_size', 'num_workers', 'epochs', 'data_folders'
 	]
 	missing = [k for k in required if k not in cfg]
 	if missing:
@@ -133,6 +136,7 @@ class PipelineConfig:
 	skip_training:    bool
 	train_frames:     int
 	tiff_chunk_size:  int
+	h5_write_batch_frames: int
 	minibatch_size:   int
 	batch_size:       int
 	num_workers:      int
@@ -153,6 +157,7 @@ class PipelineConfig:
 			skip_training    = cfg['skip_training'],
 			train_frames     = cfg['train_frames'],
 			tiff_chunk_size  = cfg['tiff_chunk_size'],
+			h5_write_batch_frames = cfg['h5_write_batch_frames'],
 			minibatch_size   = cfg['minibatch_size'],
 			batch_size       = cfg['batch_size'],
 			num_workers      = cfg['num_workers'],
@@ -248,7 +253,7 @@ def log_startup_info(logger: logging.Logger, log_path: str, cfg: PipelineConfig)
 	logger.info(f"FAST Pipeline  |  log: {log_path}")
 	logger.info(
 		f"Config: EPOCHS={cfg.epochs} TRAIN_FRAMES={cfg.train_frames} "
-		f"TIFF_CHUNK_SIZE={cfg.tiff_chunk_size} "
+		f"TIFF_CHUNK_SIZE={cfg.tiff_chunk_size} H5_WRITE_BATCH={cfg.h5_write_batch_frames} "
 		f"MINIBATCH={cfg.minibatch_size} WORKERS={cfg.num_workers} "
 		f"SKIP_TRAINING={cfg.skip_training} SCRATCH={cfg.scratch_dir}"
 	)
@@ -524,8 +529,57 @@ def step3_inference(
 			os.remove(tmp_config)
 
 
+def _stream_result_tifs_to_h5(result_dir: str, h5_savename: str, write_batch_frames: int):
+	"""
+	Merge result TIFF stacks to H5 using small frame batches to limit peak RAM.
+	"""
+	tif_fnames = sorted(glob.glob(os.path.join(result_dir, "*.tif")))
+	if not tif_fnames:
+		raise FileNotFoundError(f"No result TIFFs found in {result_dir}")
+	if write_batch_frames < 1:
+		raise ValueError("h5_write_batch_frames must be >= 1")
+
+	with tifffile.TiffFile(tif_fnames[0]) as first_stack_handle:
+		stack_depth = len(first_stack_handle.pages)
+		first_shape = first_stack_handle.pages[0].shape
+
+	if len(first_shape) < 2:
+		raise ValueError(f"Unexpected TIFF page shape in {tif_fnames[0]}: {first_shape}")
+	stack_width, stack_height = first_shape[-2], first_shape[-1]
+
+	if stack_depth > 1:
+		for tif_path in tif_fnames[1:-1]:
+			with tifffile.TiffFile(tif_path) as tif_stack_handle:
+				this_stack_depth = len(tif_stack_handle.pages)
+			if this_stack_depth != stack_depth:
+				raise AssertionError(
+					f"Stack sizes inconsistent: expected {stack_depth} frames "
+					f"but got {this_stack_depth} for file {tif_path}"
+				)
+
+	with tifffile.TiffFile(tif_fnames[-1]) as last_stack_handle:
+		last_stack_length = len(last_stack_handle.pages)
+
+	out_data_frames = (stack_depth * (len(tif_fnames) - 1)) + last_stack_length
+	write_end_ind = 0
+
+	with h5py.File(h5_savename, 'w') as f_out:
+		f_out.create_dataset('mov', (out_data_frames, stack_width, stack_height))
+		for tif_path in tif_fnames:
+			with tifffile.TiffFile(tif_path) as tif_stack_handle:
+				pages = tif_stack_handle.pages
+				page_count = len(pages)
+				for batch_start in range(0, page_count, write_batch_frames):
+					batch_end = min(batch_start + write_batch_frames, page_count)
+					batch = np.stack([pages[j].asarray() for j in range(batch_start, batch_end)], axis=0)
+					write_start_ind = write_end_ind
+					write_end_ind = write_start_ind + batch.shape[0]
+					f_out['mov'][write_start_ind:write_end_ind, :, :] = batch
+					del batch
+
+
 def step4_export_h5(
-	paths: FolderPaths, logger: logging.Logger, monitor: MemoryMonitor
+	paths: FolderPaths, cfg: PipelineConfig, logger: logging.Logger, monitor: MemoryMonitor
 ):
 	"""
 	Merge all inference TIFF chunks from result/ (tmpfs) into inference.h5 (permanent drive).
@@ -535,12 +589,8 @@ def step4_export_h5(
 	Output file size is logged to make truncated writes easy to detect.
 	"""
 	with log_step(logger, monitor, 'step4_h5_export'):
-		tif_stacks_to_h5(
-			paths.result, paths.inference_h5,
-			h5_key='mov',          # CaImAn expects 'mov' as the dataset key
-			delete_tiffs=False,    # keep TIFFs until Step 5 cleanup confirms success
-			frame_offset=False
-		)
+		logger.info(f"  H5 write batch size: {cfg.h5_write_batch_frames} frames")
+		_stream_result_tifs_to_h5(paths.result, paths.inference_h5, cfg.h5_write_batch_frames)
 		size_gb = os.path.getsize(paths.inference_h5) / 1e9
 		logger.info(f"  Saved: {paths.inference_h5}  ({size_gb:.2f} GB)")
 
@@ -659,7 +709,7 @@ def process_folder(
 		)
 
 	step3_inference(paths, checkpoint_config, logger, monitor)
-	step4_export_h5(paths, logger, monitor)
+	step4_export_h5(paths, cfg, logger, monitor)
 	step5_cleanup(paths, logger, monitor)
 
 	logger.info(f"Done: {dataFolder}")
