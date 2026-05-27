@@ -278,6 +278,38 @@ For each selected folder:
 1. CaImAn: TIF stacks → `unregistered.h5` → motion correction → `registered.h5`
 2. FAST: reads `registered.h5` → trains U-Net → inference → `inference.h5` + `_fast_complete`
 
+## Why folders are skipped (and when)
+
+The pipeline is designed to continue to the next folder when one folder is incomplete or invalid. This is intentional so one bad session does not block all queued sessions.
+
+### CaImAn-side skip conditions
+
+- **No source acquisition TIFFs while `TIFs→H5` is checked:** CaImAn prints `Skipping TIFs→H5 step — registered.h5 left untouched.` and does not overwrite existing H5 files.
+- **`TIFs→H5` checked but no motion step checked:** only `unregistered.h5` is produced; CaImAn warns that FAST will skip because `registered.h5` is never created.
+- **CaImAn raises an exception for a folder:** worker logs `Skipping FAST for this folder and continuing.` and moves to the next folder.
+
+### Worker gate before FAST
+
+After CaImAn finishes a folder, the worker checks for `registered.h5`.
+
+- **If `registered.h5` is missing:** worker logs `[FAST] Skipping — registered.h5 not found` and skips FAST for that folder.
+- **Why this happens most often:** only `TIFs→H5` was selected (no First Rigid / Addl. Rigid / NoRMCorre), or CaImAn failed before writing `registered.h5`.
+
+### FAST auto-skip / resume logic (per folder)
+
+Inside `fast/denoising.py`, `process_folder()` uses this order:
+
+1. **`_fast_complete` exists:** folder is considered fully complete, FAST skips entirely (`SKIPPING (complete)`).
+2. **Checkpoint config exists:** FAST skips Steps 1-2 (TIFF export + training) and resumes from inference.
+3. **Checkpoint exists but `registered/` TIFF folder is missing or empty:** FAST re-runs Step 1 only, then continues with inference/export.
+4. **No checkpoint:** FAST runs full pipeline.
+
+### Practical meaning
+
+- `_fast_complete` is the final success sentinel; if present, reruns are intentionally skipped.
+- Removing `_fast_complete` allows FAST to run the folder again (resume behavior depends on checkpoint files).
+- To avoid accidental skips, keep at least one motion-correction column enabled in the GUI defaults.
+
 ## Alternate launchers
 
 The GUI produces a job file at `/tmp/pipeline_job.json`:
