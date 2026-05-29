@@ -63,7 +63,6 @@ def count_triggers_from_csv(session_folder, session_name, threshold=2.5):
 
         # Try each channel (skip time column) for TTL-like pulses
         best_count = 0
-        best_col   = 1
         for col in range(1, min(data.shape[1], 6)):
             sig    = data[:, col]
             # Rising edge detection
@@ -72,7 +71,6 @@ def count_triggers_from_csv(session_folder, session_name, threshold=2.5):
             n_rise = int((edges == 1).sum())
             if n_rise > best_count:
                 best_count = n_rise
-                best_col   = col
 
         if best_count == 0:
             # Try lower threshold (some rigs use 0-1V logic)

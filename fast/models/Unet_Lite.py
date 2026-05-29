@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
-from torch.autograd import Variable
-from .baseLayers import Encoder, Decoder, FinalConv, DoubleConv, ExtResNetBlock, SingleConv
+from .baseLayers import Encoder, Decoder, DoubleConv
 
 def create_feature_maps(init_channel_number, number_of_fmaps):
     return [init_channel_number * 2 ** k for k in range(number_of_fmaps)]
@@ -93,23 +92,3 @@ class Unet_Lite(nn.Module):
         #     x = self.final_activation(x)
         return x
 
-
-if __name__ == '__main__':
-    # gradient check
-    model = Unet_Lite(in_channels = 64,
-                      out_channels = 64,
-                      final_sigmoid = True,
-                      f_maps = [64, 64, 64, 64]).cuda()
-    # tsm1 = TemporalShift(model, n_segment=10, n_div=10, inplace=False)
-
-    # print(model)
-    loss_fn = torch.nn.MSELoss()
-
-    input = Variable(torch.randn(1, 64, 512, 512)).cuda()
-    target = Variable(torch.randn(1, 64, 512, 512)).double().cuda()
-    mid_feature = torch.randn(1, 64, 64, 64).cuda()
-    output, mid_feature = model(input, 1, mid_feature)
-    output = output.double()
-    # res = torch.autograd.gradcheck(loss_fn, (output, target), eps=1e-6, raise_exception=True)
-    # print(res)
-    # print(model)

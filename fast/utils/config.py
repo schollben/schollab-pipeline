@@ -15,5 +15,3 @@ def json2args(config_path):
 
     return Namespace(**params)
 
-def load_config(args,path):
-    pass

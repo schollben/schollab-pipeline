@@ -32,7 +32,6 @@ for _thread_env, _thread_default in CAIMAN_CONFIG.get('threads', {}).items():
 	# Respect admin/user overrides while defaulting to one thread per CaImAn worker.
 	os.environ.setdefault(_thread_env, str(_thread_default))
 
-import cv2
 import math
 import h5py
 import glob
@@ -41,11 +40,6 @@ import subprocess
 import numpy as np
 from datetime import datetime
 import sys
-
-try:
-	cv2.setNumThreads(0)
-except:
-	pass
 
 import caiman as cm
 from caiman.motion_correction import MotionCorrect

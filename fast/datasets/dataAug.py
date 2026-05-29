@@ -7,9 +7,6 @@ from skimage import io
 
 
 
-def randomTransform(input,label):
-    pass
-
 def add_sCMOS_noise(image, readout_noise_std=1.5, fpn_std=0.01, dark_current_rate=0.02,
                     electron_gain=0.5, adc_bits=16, exposure_time=1.0):
     """

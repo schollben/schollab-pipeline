@@ -1,5 +1,4 @@
 from os.path import basename, dirname,join
-import code
 import numpy as np
 import wx
 import wx.lib.agw.multidirdialog as MDD
@@ -128,27 +127,6 @@ def get_registration_options():
     do_nonrig = np.array([(path in selections[3]) for path in paths])
     return (np.array(paths), np.vstack((do_h5, do_rig_1, do_rig_2, do_nonrig)))
 
-
-
-def get_h5_size(h5_path):
-    '''
-    Just return the size of the given .h5 file.
-    
-    Parameters:
-        h5_path(str): Path to h5 file.
-    Returns:
-        dims (tuple or None): Dimensions of the file.
-            If file does not exist, return None.
-    '''
-    assert h5_path.endswith(('.h5', '.hdf5')), f"{h5_path} does not end with .h5 or .hdf5."
-    try:
-        with h5py.File(h5_path, 'r') as f:
-            key = 'mov' if 'mov' in f.keys() else 'data'
-            return f[key].shape
-    except FileNotFoundError:
-        print("Cannot give size for f{h5_path} because it wasn't found.")
-        return None
-    
 
 
 # Brief test
