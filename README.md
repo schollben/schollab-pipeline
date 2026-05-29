@@ -22,7 +22,7 @@ PreProcess2PImages/
 │   └── scan_sessions.py     Audit recording sessions before running
 ├── workers/
 │   └── pipeline_worker.py    Headless per-folder caiman→FAST (systemd only)
-├── PreProcess2PImages.sh              Launcher: --setup, GUI + status/attach/stop + clean
+├── PreProcess2PImages.sh              Launcher: --setup, GUI + status/logs/stop + clean
 ├── caiman_conda_env.yml     CaImAn conda environment spec
 └── fast_pip_requirements.txt  FAST pip requirements
 ```
@@ -214,8 +214,8 @@ export FAST_SCRATCH_DIR="$HOME/Documents/scratch"
 ### Logs and completion
 
 ```bash
-bash PreProcess2PImages.sh --attach
-journalctl --user -u schollab-PreProcess2PImages -f
+bash PreProcess2PImages.sh --logs
+# equivalent: journalctl --user -f -u schollab-PreProcess2PImages
 ```
 
 Healthy markers: CaImAn `motion correction starting/finished`, FAST `START`/`DONE step4_h5_export`, `Written: .../_fast_complete`, `pipeline_worker: all folders complete`. FAST `print` output can appear out of order in the journal due to buffering — use stage log lines above for progress.
@@ -223,7 +223,7 @@ Healthy markers: CaImAn `motion correction starting/finished`, FAST `START`/`DON
 ### Tuning workflow
 
 1. Pick one representative folder (medium size if possible).
-2. Run Profile A with `--attach`.
+2. Run Profile A with `--logs`.
 3. If swap stays manageable, step up to Profile B on the next folder.
 4. Only use Profile C after two consecutive successful runs with low swap.
 
@@ -254,7 +254,7 @@ The registration GUI pre-checks **TIFs→.H5** and **First Rigid** by default fo
 ```bash
 bash PreProcess2PImages.sh --setup                 # conda envs + linger + scratch tmpfs (new machine)
 bash PreProcess2PImages.sh                        # open GUI, launch pipeline
-bash PreProcess2PImages.sh --attach               # follow live output
+bash PreProcess2PImages.sh --logs                 # follow live journal output
 bash PreProcess2PImages.sh --status               # service status + last log lines
 bash PreProcess2PImages.sh --stop                 # stop a running pipeline
 

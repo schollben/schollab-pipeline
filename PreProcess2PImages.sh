@@ -4,7 +4,7 @@
 #
 # Usage:
 #   bash PreProcess2PImages.sh                       # launch GUI, start pipeline
-#   bash PreProcess2PImages.sh --attach              # follow live output (journalctl)
+#   bash PreProcess2PImages.sh --logs                # follow live output (journalctl)
 #   bash PreProcess2PImages.sh --status              # service status + last log lines
 #   bash PreProcess2PImages.sh --stop                # stop a running pipeline
 #   bash PreProcess2PImages.sh --clean_caiman        # scan: list CaImAn artifacts (no delete)
@@ -54,7 +54,7 @@ for arg in "$@"; do
 		--)             PASSTHRU=true        ;;
 		--from-job)     CLEAN_FROM_JOB=true  ;;
 		--yes)          CLEAN_YES=true       ;;
-		--attach)       MODE="attach"        ;;
+		--logs)         MODE="logs"          ;;
 		--status)       MODE="status"        ;;
 		--stop)         MODE="stop"          ;;
 		--setup)        MODE="setup"         ;;
@@ -542,10 +542,10 @@ if [ "$MODE" = "status" ]; then
 	exit 0
 fi
 
-# ── attach mode ───────────────────────────────────────────────────────────────
+# ── logs mode ─────────────────────────────────────────────────────────────────
 
-if [ "$MODE" = "attach" ]; then
-	echo "Following pipeline output — Ctrl+C to detach (pipeline keeps running)"
+if [ "$MODE" = "logs" ]; then
+	echo "Following live pipeline logs (journalctl) — Ctrl+C to exit (pipeline keeps running)"
 	echo ""
 	journalctl --user -f -u "$UNIT_NAME"
 	exit 0
@@ -595,7 +595,7 @@ echo ""
 
 echo ""
 echo "Useful commands:"
-echo "  Follow live output:  bash PreProcess2PImages.sh --attach"
+echo "  Follow live logs:      bash PreProcess2PImages.sh --logs"
 echo "  Check status:        bash PreProcess2PImages.sh --status"
 echo "  Stop pipeline:       bash PreProcess2PImages.sh --stop"
 echo "  Raw journal:         journalctl --user -f -u $UNIT_NAME"
