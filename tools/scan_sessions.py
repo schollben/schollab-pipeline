@@ -95,86 +95,87 @@ def count_triggers_from_csv(session_folder, session_name, threshold=2.5):
         return None, f'error: {e}'
 
 
-######## Find all sessions ########
-all_mp = sorted(glob.glob(
-    os.path.join(RAW_ROOT, '**', 'TSeries-*_Cycle00001_MarkPoints.xml'),
-    recursive=True
-))
+if __name__ == '__main__':
+    ######## Find all sessions ########
+    all_mp = sorted(glob.glob(
+        os.path.join(RAW_ROOT, '**', 'TSeries-*_Cycle00001_MarkPoints.xml'),
+        recursive=True
+    ))
 
-if not all_mp:
-    raise FileNotFoundError(f'No MarkPoints XMLs found under {RAW_ROOT}')
+    if not all_mp:
+        raise FileNotFoundError(f'No MarkPoints XMLs found under {RAW_ROOT}')
 
-sessions = {}
-for path in all_mp:
-    fname   = os.path.basename(path)
-    session = fname.replace('_Cycle00001_MarkPoints.xml', '')
-    sessions[session] = os.path.dirname(path)
+    sessions = {}
+    for path in all_mp:
+        fname   = os.path.basename(path)
+        session = fname.replace('_Cycle00001_MarkPoints.xml', '')
+        sessions[session] = os.path.dirname(path)
 
-print(f'{"="*90}')
-print(f'{"SESSION":<45} {"COND":<6} {"POWERS":<14} '
-      f'{"TRIGGERS":<12} {"TRIALS(ea)":<12} {"FLAGS"}')
-print(f'{"-"*90}')
+    print(f'{"="*90}')
+    print(f'{"SESSION":<45} {"COND":<6} {"POWERS":<14} '
+          f'{"TRIGGERS":<12} {"TRIALS(ea)":<12} {"FLAGS"}')
+    print(f'{"-"*90}')
 
-for session, folder in sorted(sessions.items()):
-    flags = []
+    for session, folder in sorted(sessions.items()):
+        flags = []
 
-    # --- MarkPoints XML ---
-    mp_path = os.path.join(folder, f'{session}_Cycle00001_MarkPoints.xml')
-    try:
-        tree     = ET.parse(mp_path)
-        root     = tree.getroot()
-        elements = root.findall('PVMarkPointElement')
-        n_cond   = len(elements)
-        powers   = [float(el.attrib.get('UncagingLaserPower', -1))
-                    for el in elements]
-        has_sham = 0.0 in powers
-        has_opto = any(p > 0 for p in powers)
+        # --- MarkPoints XML ---
+        mp_path = os.path.join(folder, f'{session}_Cycle00001_MarkPoints.xml')
+        try:
+            tree     = ET.parse(mp_path)
+            root     = tree.getroot()
+            elements = root.findall('PVMarkPointElement')
+            n_cond   = len(elements)
+            powers   = [float(el.attrib.get('UncagingLaserPower', -1))
+                        for el in elements]
+            has_sham = 0.0 in powers
+            has_opto = any(p > 0 for p in powers)
 
-        if not has_sham: flags.append('NO SHAM')
-        if not has_opto: flags.append('NO OPTO')
-        if n_cond > 2:   flags.append(f'{n_cond} CONDITIONS')
+            if not has_sham: flags.append('NO SHAM')
+            if not has_opto: flags.append('NO OPTO')
+            if n_cond > 2:   flags.append(f'{n_cond} CONDITIONS')
 
-        cond_str  = str(n_cond)
-        power_str = '/'.join(str(int(p)) for p in powers)
-    except Exception as e:
-        cond_str = power_str = 'ERR'
-        flags.append(f'XML error')
+            cond_str  = str(n_cond)
+            power_str = '/'.join(str(int(p)) for p in powers)
+        except Exception as e:
+            cond_str = power_str = 'ERR'
+            flags.append(f'XML error')
 
-    # --- Voltage recording CSV for trigger count ---
-    n_triggers, csv_err = count_triggers_from_csv(folder, session)
-    if csv_err:
-        trig_str  = '?'
-        trial_str = f'({csv_err})'
-    else:
-        trig_str = str(n_triggers)
-        if n_cond == 2 and has_sham and has_opto:
-            n_each    = n_triggers // 2
-            trial_str = f'~{n_each} each'
+        # --- Voltage recording CSV for trigger count ---
+        n_triggers, csv_err = count_triggers_from_csv(folder, session)
+        if csv_err:
+            trig_str  = '?'
+            trial_str = f'({csv_err})'
         else:
-            trial_str = f'total={n_triggers}'
+            trig_str = str(n_triggers)
+            if n_cond == 2 and has_sham and has_opto:
+                n_each    = n_triggers // 2
+                trial_str = f'~{n_each} each'
+            else:
+                trial_str = f'total={n_triggers}'
 
-    # --- H5 cross-check if available ---
-    if HAS_H5PY:
-        h5_matches = glob.glob(os.path.join(PROCESSED_DIR, f'{session}.h5'))
-        if h5_matches:
-            try:
-                with h5py.File(h5_matches[0], 'r') as f:
-                    cyc   = f['cyc_photostim_only'][()]
-                    mp_lp = f['markpoints_laser_power'][()] \
-                            if 'markpoints_laser_power' in f else np.array([])
-                    if cyc.shape[1] > 1:
-                        trial_str = f'{cyc.shape[2]} ea [H5]'
-                    elif len(mp_lp) > 0 and 0. in mp_lp and np.any(mp_lp > 0):
-                        trial_str = f'{cyc.shape[2]//2} ea [H5-recovered]'
-                        flags.append('CONDITIONS COLLAPSED')
-                    else:
-                        trial_str = f'total={cyc.shape[2]} [H5]'
-            except Exception:
-                pass
+        # --- H5 cross-check if available ---
+        if HAS_H5PY:
+            h5_matches = glob.glob(os.path.join(PROCESSED_DIR, f'{session}.h5'))
+            if h5_matches:
+                try:
+                    with h5py.File(h5_matches[0], 'r') as f:
+                        cyc   = f['cyc_photostim_only'][()]
+                        mp_lp = f['markpoints_laser_power'][()] \
+                                if 'markpoints_laser_power' in f else np.array([])
+                        if cyc.shape[1] > 1:
+                            trial_str = f'{cyc.shape[2]} ea [H5]'
+                        elif len(mp_lp) > 0 and 0. in mp_lp and np.any(mp_lp > 0):
+                            trial_str = f'{cyc.shape[2]//2} ea [H5-recovered]'
+                            flags.append('CONDITIONS COLLAPSED')
+                        else:
+                            trial_str = f'total={cyc.shape[2]} [H5]'
+                except Exception:
+                    pass
 
-    flag_str = ' | '.join(flags) if flags else 'OK'
-    print(f'{session:<45} {cond_str:<6} {power_str:<14} '
-          f'{trig_str:<12} {trial_str:<12} {flag_str}')
+        flag_str = ' | '.join(flags) if flags else 'OK'
+        print(f'{session:<45} {cond_str:<6} {power_str:<14} '
+              f'{trig_str:<12} {trial_str:<12} {flag_str}')
 
-print(f'{"="*90}')
-print('Done.')
+    print(f'{"="*90}')
+    print('Done.')
