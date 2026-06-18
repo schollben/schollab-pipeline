@@ -57,6 +57,7 @@ import tifffile
 
 # Import from renamed modules in the same caiman/ directory
 from registration_gui import get_registration_options
+from pipeline_job import apply_skip_caiman
 from tif_to_h5 import tif_stacks_to_h5
 from tiff_compat import tiff_writer_append
 
@@ -333,11 +334,13 @@ def register_bulk(sessions_to_run, process_selections):
 
 
 if __name__ == '__main__':
-	# Get folder selections from the GUI — returns (paths array, 4×N bool array)
-	workdirs, proc_opts = get_registration_options()
+	# Get folder selections from the GUI — returns (paths, 4×N bool array, skip_caiman)
+	workdirs, proc_opts, skip_caiman = get_registration_options()
 	if workdirs is None:
 		print("No folders selected. Exiting.")
 		sys.exit(0)
+
+	proc_opts = apply_skip_caiman(proc_opts, skip_caiman)
 
 	# Write job file consumed by workers/pipeline_worker.py.
 	# Keeping this as a plain JSON file means any alternative launcher
@@ -347,6 +350,7 @@ if __name__ == '__main__':
 	job = {
 		"sessions": workdirs.tolist(),
 		"process_selections": proc_opts.tolist(),
+		"skip_caiman": skip_caiman,
 		"run_id": run_id,
 		"unit_name": unit_name,
 	}
@@ -354,6 +358,7 @@ if __name__ == '__main__':
 	pathlib.Path(ACTIVE_UNIT_PATH).write_text(unit_name)
 	print(f"Job written to {JOB_PATH}")
 	print(f"Sessions queued: {len(workdirs)}")
+	print(f"skip_caiman: {skip_caiman}")
 	print(f"Run unit: {unit_name}")
 
 	# Clear any stale failed unit from a previous run (legacy fixed name).

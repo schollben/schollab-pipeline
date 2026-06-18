@@ -251,6 +251,8 @@ If a folder has **`registered.h5`** but **no acquisition TIFs** (previews exclud
 
 The registration GUI pre-checks **TIFs→.H5** and **First Rigid** by default for each folder so motion correction runs and `registered.h5` exists for FAST if you leave defaults; adjust the columns per folder as needed.
 
+**Skip CaImAn (FAST only):** check this box at the top of the GUI to grey out all CaImAn columns and run denoising only. Each folder must already have `registered.h5`. Remove `_fast_complete` to force a FAST re-run. The GUI warns if any selected folder lacks `registered.h5`.
+
 ```bash
 bash PreProcess2PImages.sh --setup                 # conda envs + linger + scratch tmpfs (new machine)
 bash PreProcess2PImages.sh                        # open GUI, launch pipeline
@@ -316,8 +318,15 @@ The GUI produces a job file at `/tmp/pipeline_job.json`:
 ```json
 {
   "sessions": ["/mnt/bigdata/BRUKER/TSeries-001", "..."],
-  "process_selections": [[true, false, true, false], ...]
+  "process_selections": [[true, false, true, false], ...],
+  "skip_caiman": false,
+  "run_id": "20250618143000",
+  "unit_name": "schollab-PreProcess2PImages-20250618143000"
 }
+```
+Set `"skip_caiman": true` (or pass `--skip-caiman` to the worker) to skip CaImAn and run FAST only when `registered.h5` already exists:
+```bash
+python workers/pipeline_worker.py /tmp/pipeline_job.json --skip-caiman
 ```
 Any tool that writes this file can trigger the pipeline — the GUI is one option,
 not a requirement. A CLI or web UI can produce the same file.
