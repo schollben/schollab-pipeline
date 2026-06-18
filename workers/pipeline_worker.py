@@ -15,7 +15,9 @@ Usage (normally invoked by registration.py, not run directly). Debug from repo r
 import os
 import sys
 import json
+import resource
 import subprocess
+import time
 
 # Repo root is parent of workers/ — worker moved from repo root so we need two dirnames.
 REPO_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,6 +45,32 @@ FAST_PYTHON     = os.path.join(_schollab_conda_root(), 'envs', 'FAST', 'bin', 'p
 FAST_SCRIPT     = os.path.join(FAST_DIR, 'denoising.py')
 FAST_BASE_CFG   = os.path.join(FAST_DIR, 'config.json')
 FAST_BASE_CFG_LEGACY = os.path.join(FAST_DIR, 'pipeline_config.json')
+
+
+def _rusage_cpu_seconds(ru):
+	"""User + system CPU seconds from a resource usage struct."""
+	return ru.ru_utime + ru.ru_stime
+
+
+def _print_run_summary(run_t0, rusage_self_t0, rusage_child_t0, n_sessions):
+	"""
+	Print wall and CPU time for this worker invocation only.
+
+	Why: systemd's trailing "Consumed CPU time" reuses a fixed unit name and often
+	under-counts FAST subprocess work — this summary is scoped to the current run.
+	"""
+	wall_s = time.perf_counter() - run_t0
+	rs = resource.getrusage(resource.RUSAGE_SELF)
+	rc = resource.getrusage(resource.RUSAGE_CHILDREN)
+	cpu_self = _rusage_cpu_seconds(rs) - _rusage_cpu_seconds(rusage_self_t0)
+	cpu_child = _rusage_cpu_seconds(rc) - _rusage_cpu_seconds(rusage_child_t0)
+	cpu_total = cpu_self + cpu_child
+	print("")
+	print("=" * 60)
+	print(f"pipeline_worker: run summary ({n_sessions} folder(s))")
+	print(f"  wall time: {wall_s / 3600:.2f} h ({wall_s:.1f} s)")
+	print(f"  CPU time:  {cpu_total:.1f} s (worker {cpu_self:.1f} s + FAST {cpu_child:.1f} s)")
+	print("=" * 60)
 
 
 def load_fast_base_config():
@@ -112,46 +140,54 @@ def main():
 
 	sessions         = job["sessions"]
 	proc_selections  = np.array(job["process_selections"])   # shape: 4×N
+	n_sessions       = len(sessions)
+	run_id           = job.get("run_id", "unknown")
 
-	print(f"pipeline_worker: {len(sessions)} folder(s) to process")
+	run_t0 = time.perf_counter()
+	rusage_self_t0 = resource.getrusage(resource.RUSAGE_SELF)
+	rusage_child_t0 = resource.getrusage(resource.RUSAGE_CHILDREN)
+
+	print(f"pipeline_worker: {n_sessions} folder(s) to process (run_id={run_id})")
 	for s in sessions:
 		print(f"  {s}")
 	print()
 
 	base_cfg = load_fast_base_config()
 
-	for i, folder in enumerate(sessions):
+	try:
+		for i, folder in enumerate(sessions):
+			print(f"\n{'='*60}")
+			print(f"Folder {i+1}/{n_sessions}: {folder}")
+			print(f"{'='*60}")
+
+			# Step 1: caiman motion correction for this folder only.
+			# Passes a 4×1 slice so register_bulk processes exactly one session.
+			print(f"  [caiman] Starting motion correction...")
+			try:
+				register_bulk([folder], proc_selections[:, i:i+1])
+				print(f"  [caiman] Done: {folder}")
+			except Exception as e:
+				print(f"  [caiman] ERROR on {folder}: {e}")
+				print(f"  Skipping FAST for this folder and continuing.")
+				continue
+
+			# FAST consumes registered.h5 from CaImAn. TIFs→H5 alone only makes unregistered.h5.
+			registered_h5 = os.path.join(folder, 'registered.h5')
+			if not os.path.isfile(registered_h5):
+				print(
+					"  [FAST] Skipping — registered.h5 not found.\n"
+					"  If you used TIFs→.H5, also check at least one motion step "
+					"(First Rigid, Addl. Rigid, or NoRMCorre) so CaImAn writes registered.h5."
+				)
+				continue
+
+			# Step 2: FAST denoising — reads registered.h5 written by caiman
+			run_fast_on_folder(folder, base_cfg, i)
+
 		print(f"\n{'='*60}")
-		print(f"Folder {i+1}/{len(sessions)}: {folder}")
-		print(f"{'='*60}")
-
-		# Step 1: caiman motion correction for this folder only.
-		# Passes a 4×1 slice so register_bulk processes exactly one session.
-		print(f"  [caiman] Starting motion correction...")
-		try:
-			register_bulk([folder], proc_selections[:, i:i+1])
-			print(f"  [caiman] Done: {folder}")
-		except Exception as e:
-			print(f"  [caiman] ERROR on {folder}: {e}")
-			print(f"  Skipping FAST for this folder and continuing.")
-			continue
-
-		# FAST consumes registered.h5 from CaImAn. TIFs→H5 alone only makes unregistered.h5.
-		registered_h5 = os.path.join(folder, 'registered.h5')
-		if not os.path.isfile(registered_h5):
-			print(
-				"  [FAST] Skipping — registered.h5 not found.\n"
-				"  If you used TIFs→.H5, also check at least one motion step "
-				"(First Rigid, Addl. Rigid, or NoRMCorre) so CaImAn writes registered.h5."
-			)
-			continue
-
-		# Step 2: FAST denoising — reads registered.h5 written by caiman
-		run_fast_on_folder(folder, base_cfg, i)
-
-	print(f"\n{'='*60}")
-	print("pipeline_worker: all folders complete.")
-	print(f"{'='*60}")
+		print("pipeline_worker: all folders complete.")
+	finally:
+		_print_run_summary(run_t0, rusage_self_t0, rusage_child_t0, n_sessions)
 
 
 if __name__ == '__main__':
