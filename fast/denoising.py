@@ -66,7 +66,7 @@ import torch
 from train import goTraining
 from test import goTesting
 from utils.config import json2args
-from utils.h5_utils import h5_to_tiff
+from utils.h5_utils import h5_to_tiff, sort_tif_stack_paths
 
 
 FAST_CONFIG_PATH = os.path.join(
@@ -406,7 +406,7 @@ def step1_export_tiffs(
 		logger.info(f"  TIFF chunk size: {cfg.tiff_chunk_size} frames")
 		h5_to_tiff(paths.h5, output_dir=paths.registered, chunk_size=cfg.tiff_chunk_size)
 
-		tif_files = sorted(glob.glob(os.path.join(paths.registered, '*.tif')))
+		tif_files = sort_tif_stack_paths(glob.glob(os.path.join(paths.registered, '*.tif')))
 		if not tif_files:
 			raise FileNotFoundError(f"No TIFFs created in {paths.registered}")
 
@@ -475,7 +475,7 @@ def step3_inference(
 	"""
 	with log_step(logger, monitor, 'step3_inference'):
 		# Guard: registered/ must have TIFFs — goTesting silently returns otherwise
-		reg_tifs = sorted(glob.glob(os.path.join(paths.registered, '*.tif')))
+		reg_tifs = sort_tif_stack_paths(glob.glob(os.path.join(paths.registered, '*.tif')))
 		if not reg_tifs:
 			raise FileNotFoundError(
 				f"registered/ has no TIFFs at {paths.registered}. "
@@ -514,7 +514,7 @@ def step3_inference(
 		goTesting(args)
 
 		# Validate goTesting actually produced output — it silently returns on error
-		result_tifs = sorted(glob.glob(os.path.join(paths.result, '*.tif')))
+		result_tifs = sort_tif_stack_paths(glob.glob(os.path.join(paths.result, '*.tif')))
 		if not result_tifs:
 			raise RuntimeError(
 				f"goTesting returned without writing any TIFFs to {paths.result}.\n"
@@ -533,7 +533,7 @@ def _stream_result_tifs_to_h5(result_dir: str, h5_savename: str, write_batch_fra
 	"""
 	Merge result TIFF stacks to H5 using small frame batches to limit peak RAM.
 	"""
-	tif_fnames = sorted(glob.glob(os.path.join(result_dir, "*.tif")))
+	tif_fnames = sort_tif_stack_paths(glob.glob(os.path.join(result_dir, "*.tif")))
 	if not tif_fnames:
 		raise FileNotFoundError(f"No result TIFFs found in {result_dir}")
 	if write_batch_frames < 1:
@@ -614,7 +614,7 @@ def step5_cleanup(
 	misconfiguration where SCRATCH_DIR equals the permanent data drive.
 	"""
 	with log_step(logger, monitor, 'step5_cleanup'):
-		result_tifs = sorted(glob.glob(os.path.join(paths.result, '*.tif')))
+		result_tifs = sort_tif_stack_paths(glob.glob(os.path.join(paths.result, '*.tif')))
 		if result_tifs:
 			dest = os.path.join(paths.root, os.path.basename(result_tifs[0]))
 			shutil.copy2(result_tifs[0], dest)

@@ -5,7 +5,7 @@ import os
 import glob
 import sys
 
-from tiff_compat import tiff_writer_append
+from tiff_compat import tiff_writer_append, format_chunk_tif_name, sort_tif_stack_paths
 
 
 def h5_to_tiff(h5_path, max_frames=None, chunk_size=5000, output_dir=None):
@@ -57,7 +57,9 @@ def h5_to_tiff(h5_path, max_frames=None, chunk_size=5000, output_dir=None):
             chunk_frames = end_frame - start_frame
 
             # Create output filename with chunk number
-            chunk_output = os.path.join(save_dir, f"{base_name}_{chunk_idx+1:02d}.tif")
+            chunk_output = os.path.join(
+                save_dir, format_chunk_tif_name(base_name, chunk_idx + 1, num_chunks)
+            )
 
             print(f"\nChunk {chunk_idx+1}/{num_chunks}: Saving frames {start_frame} to {end_frame-1} to {chunk_output}")
 
@@ -105,7 +107,8 @@ if __name__ == '__main__':
         print("  python h5_to_tif.py registered.h5 20000 5000")
         print("  python h5_to_tif.py /path/to/directory")
         print("\nOutput:")
-        print("  Creates numbered TIFF stacks: registered_01.tif, registered_02.tif, etc.")
+        print("  Creates numbered TIFF stacks: registered_001.tif, registered_002.tif, etc.")
+        print("  (padding width scales with chunk count — safe for 100k+ frames)")
         print("  Default chunk size: 8,000 frames per stack")
         sys.exit(1)
 
