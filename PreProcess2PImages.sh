@@ -35,6 +35,7 @@ SCRATCH_TMPFS_SIZE="120G"
 CAIMAN_PYTHON="$SCHOLLAB_CONDA_ROOT/envs/caiman/bin/python"
 REGISTRATION_SCRIPT="$REPO_DIR/caiman/registration.py"
 JOB_FILE="${JOB_FILE:-/tmp/pipeline_job.json}"
+ACTIVE_UNIT_FILE="${ACTIVE_UNIT_FILE:-/tmp/pipeline_active_unit.txt}"
 
 # ── parse args ────────────────────────────────────────────────────────────────
 
@@ -66,6 +67,15 @@ for arg in "$@"; do
 done
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+# Each GUI launch gets a unique systemd unit; fall back to legacy fixed name.
+_active_unit() {
+	if [ -f "$ACTIVE_UNIT_FILE" ]; then
+		cat "$ACTIVE_UNIT_FILE"
+	else
+		echo "$UNIT_NAME"
+	fi
+}
 
 _resolve_fast_config() {
 	if [ -f "$FAST_CONFIG" ]; then
@@ -533,8 +543,10 @@ fi
 # ── status mode ───────────────────────────────────────────────────────────────
 
 if [ "$MODE" = "status" ]; then
+	ACTIVE_UNIT="$(_active_unit)"
 	echo "── systemd service ──────────────────────────────────"
-	systemctl --user status "$UNIT_NAME" 2>/dev/null || echo "Service not active"
+	echo "  unit: $ACTIVE_UNIT"
+	systemctl --user status "$ACTIVE_UNIT" 2>/dev/null || echo "Service not active"
 	echo ""
 	echo "── Last 20 FAST log lines ───────────────────────────"
 	tail -20 "$(ls -t "$FAST_LOG_DIR"/_pipeline_log_*.txt 2>/dev/null | head -1)" 2>/dev/null \
@@ -545,18 +557,21 @@ fi
 # ── attach mode ───────────────────────────────────────────────────────────────
 
 if [ "$MODE" = "attach" ]; then
+	ACTIVE_UNIT="$(_active_unit)"
 	echo "Following pipeline output — Ctrl+C to detach (pipeline keeps running)"
+	echo "  unit: $ACTIVE_UNIT"
 	echo ""
-	journalctl --user -f -u "$UNIT_NAME"
+	journalctl --user -f -u "$ACTIVE_UNIT"
 	exit 0
 fi
 
 # ── stop mode ─────────────────────────────────────────────────────────────────
 
 if [ "$MODE" = "stop" ]; then
-	systemctl --user stop "$UNIT_NAME" 2>/dev/null \
-		&& echo "Pipeline stopped." \
-		|| echo "Pipeline was not running."
+	ACTIVE_UNIT="$(_active_unit)"
+	systemctl --user stop "$ACTIVE_UNIT" 2>/dev/null \
+		&& echo "Pipeline stopped ($ACTIVE_UNIT)." \
+		|| echo "Pipeline was not running ($ACTIVE_UNIT)."
 	exit 0
 fi
 
@@ -598,4 +613,4 @@ echo "Useful commands:"
 echo "  Follow live output:  bash PreProcess2PImages.sh --attach"
 echo "  Check status:        bash PreProcess2PImages.sh --status"
 echo "  Stop pipeline:       bash PreProcess2PImages.sh --stop"
-echo "  Raw journal:         journalctl --user -f -u $UNIT_NAME"
+echo "  Raw journal:         journalctl --user -f -u \$(cat ${ACTIVE_UNIT_FILE} 2>/dev/null || echo ${UNIT_NAME})"

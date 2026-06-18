@@ -109,6 +109,8 @@ WORKER_SCRIPT = os.path.join(REPO_DIR, 'workers', 'pipeline_worker.py')
 CAIMAN_PYTHON = os.path.join(_schollab_conda_root(), 'envs', 'caiman', 'bin', 'python')
 UNIT_NAME     = 'schollab-PreProcess2PImages'
 JOB_PATH      = '/tmp/pipeline_job.json'
+# Written at launch so PreProcess2PImages.sh --stop/--attach target this run only.
+ACTIVE_UNIT_PATH = '/tmp/pipeline_active_unit.txt'
 
 
 def _run_motion_correction(parent_dir, fnames, opts, mc_dict):
@@ -340,26 +342,32 @@ if __name__ == '__main__':
 	# Write job file consumed by workers/pipeline_worker.py.
 	# Keeping this as a plain JSON file means any alternative launcher
 	# (CLI, web UI, etc.) can produce the same file to trigger the pipeline.
+	run_id = datetime.now().strftime('%Y%m%d%H%M%S')
+	unit_name = f'{UNIT_NAME}-{run_id}'
 	job = {
 		"sessions": workdirs.tolist(),
-		"process_selections": proc_opts.tolist()
+		"process_selections": proc_opts.tolist(),
+		"run_id": run_id,
+		"unit_name": unit_name,
 	}
 	pathlib.Path(JOB_PATH).write_text(json.dumps(job, indent=2))
+	pathlib.Path(ACTIVE_UNIT_PATH).write_text(unit_name)
 	print(f"Job written to {JOB_PATH}")
 	print(f"Sessions queued: {len(workdirs)}")
+	print(f"Run unit: {unit_name}")
 
-	# Clear any stale failed unit from a previous run
+	# Clear any stale failed unit from a previous run (legacy fixed name).
 	subprocess.run(
 		["systemctl", "--user", "reset-failed", UNIT_NAME],
 		check=False
 	)
 
-	# Launch workers/pipeline_worker.py as a persistent systemd user service.
-	# Runs under the caiman python env; worker calls FAST via subprocess.
-	# loginctl enable-linger must already be set (done by PreProcess2PImages.sh).
+	# Launch workers/pipeline_worker.py as a transient systemd user service.
+	# Unique unit name per run so journal "Consumed CPU time" is scoped to this job.
 	systemd_cmd = [
 		"systemd-run", "--user",
-		f"--unit={UNIT_NAME}",
+		f"--unit={unit_name}",
+		"--collect",
 		"--description=Schollab caiman+FAST pipeline",
 		f"--setenv=HOME={os.path.expanduser('~')}",
 		# Worker subprocess needs same prefix as GUI so FAST_PYTHON resolves correctly.
@@ -375,5 +383,5 @@ if __name__ == '__main__':
 	])
 	subprocess.run(systemd_cmd, check=True)
 
-	print(f"Pipeline launched as systemd service '{UNIT_NAME}'.")
-	print(f"Monitor: journalctl --user -f -u {UNIT_NAME}")
+	print(f"Pipeline launched as systemd service '{unit_name}'.")
+	print(f"Monitor: journalctl --user -f -u {unit_name}")
