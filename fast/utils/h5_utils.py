@@ -6,6 +6,43 @@ import re
 from glob import glob
 from tqdm import tqdm
 
+# Keep chunk helpers aligned with caiman/tiff_compat.py (FAST env cannot import caiman/).
+def chunk_index_pad_width(num_chunks):
+    """Digit width for chunk suffixes so lex sort matches frame order (>=100 chunks)."""
+    return max(2, len(str(num_chunks)))
+
+
+def format_chunk_tif_name(base_name, chunk_number, num_chunks):
+    """Build a chunk TIFF name with enough zero-padding for num_chunks stacks."""
+    width = chunk_index_pad_width(num_chunks)
+    return f"{base_name}_{chunk_number:0{width}d}.tif"
+
+
+def chunk_index_from_basename(name):
+    """
+    Parse trailing _NNN chunk index from a TIFF basename, or None if not a chunk stack.
+    """
+    stem = name
+    for ext in ('.tiff', '.tif'):
+        if stem.lower().endswith(ext):
+            stem = stem[:-len(ext)]
+            break
+    if '_' not in stem:
+        return None
+    suffix = stem.rsplit('_', 1)[-1]
+    if suffix.isdigit():
+        return int(suffix)
+    return None
+
+
+def sort_tif_stack_paths(paths):
+    """Sort chunk TIFF stacks by trailing index; lex sort fallback for other names."""
+    indexed = [(chunk_index_from_basename(os.path.basename(p)), p) for p in paths]
+    if indexed and all(idx is not None for idx, _ in indexed):
+        return [p for _, p in sorted(indexed, key=lambda item: item[0])]
+    return sorted(paths)
+
+
 def _scanimage_tiffs_one_cycle(paths, cycle_re):
     """Same logic as caiman/tif_to_h5._scanimage_tiffs_one_cycle."""
     from collections import defaultdict
@@ -104,7 +141,9 @@ def h5_to_tiff(h5_path, max_frames=None, chunk_size=5000, output_dir=None):
             end_frame = min(start_frame + chunk_size, frames_to_save)
             chunk_frames = end_frame - start_frame
 
-            chunk_output = os.path.join(save_dir, f"{base_name}_{chunk_idx+1:02d}.tif")
+            chunk_output = os.path.join(
+                save_dir, format_chunk_tif_name(base_name, chunk_idx + 1, num_chunks)
+            )
             print(f"\nChunk {chunk_idx+1}/{num_chunks}: Saving frames {start_frame} to {end_frame-1} to {chunk_output}")
 
             with tifffile.TiffWriter(chunk_output, bigtiff=False, imagej=True) as tif:
@@ -131,8 +170,10 @@ def tif_stacks_to_h5(tif_dir, h5_savename, h5_key='mov', delete_tiffs=False, fra
         frame_offset (bool): Whether to add flipped frame offsets at beginning and end.
         offset (int): Number of frames to add at beginning and end if frame_offset is True.
     """
-    tif_fnames = sorted(glob(os.path.join(tif_dir, "*.tif")))
+    tif_fnames = sort_tif_stack_paths(glob(os.path.join(tif_dir, "*.tif")))
     tif_fnames = _acquisition_tif_paths(tif_fnames)
+    # Re-sort chunk stacks after acquisition filter (100+ chunks need numeric order).
+    tif_fnames = sort_tif_stack_paths(tif_fnames)
     assert len(tif_fnames) > 0, f"No .tif files found in {tif_dir}"
 
     first_tif = tifffile.imread(tif_fnames[0])

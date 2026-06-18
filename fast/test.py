@@ -1,4 +1,3 @@
-import datetime
 import glob
 import os
 import logging
@@ -8,6 +7,7 @@ import torch
 from models.Unet_Lite import Unet_Lite
 from tqdm import tqdm
 from skimage import io
+from utils.h5_utils import sort_tif_stack_paths
 
 
 def _load_single_tif(filepath):
@@ -57,7 +57,8 @@ def goTesting(args):
     model.eval()
 
     # Discover TIF files in test directory
-    tif_files = sorted(
+    # Numeric chunk order — plain sorted() breaks at 100+ stacks (registered_100 < registered_11).
+    tif_files = sort_tif_stack_paths(
         glob.glob(os.path.join(args.test_path, '*.tif'))
         + glob.glob(os.path.join(args.test_path, '*.tiff'))
     )
@@ -104,7 +105,8 @@ def goTesting(args):
             output_image = np.squeeze(output.numpy()) * 1.0
             del input_tensor, output  # free GPU/CPU memory
 
-            result_name = os.path.join(testSave_dir, f"{datetime.datetime.now().strftime('%Y%m%d%H%M')}_{filename}")
+            # Keep source chunk name so Step 4 merge can sort by trailing index.
+            result_name = os.path.join(testSave_dir, filename)
             output_image = np.clip(output_image, 0, 65535)
             io.imsave(result_name, output_image.astype(np.uint16), check_contrast=False)
             del output_image
