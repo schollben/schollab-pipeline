@@ -10,8 +10,10 @@ so it runs outside the login session cgroup and survives display/GDM crashes.
 
 Usage (normally invoked by registration.py, not run directly). Debug from repo root:
     python workers/pipeline_worker.py /tmp/pipeline_job.json
+    python workers/pipeline_worker.py /tmp/pipeline_job.json --skip-caiman
 """
 
+import argparse
 import os
 import sys
 import json
@@ -26,6 +28,7 @@ FAST_DIR    = os.path.join(REPO_DIR, 'fast')
 sys.path.insert(0, CAIMAN_DIR)
 
 from registration import register_bulk
+from pipeline_job import apply_skip_caiman, resolve_skip_caiman
 import numpy as np  # registration applies CaImAn thread caps before NumPy is loaded.
 
 
@@ -125,12 +128,20 @@ def run_fast_on_folder(folder, base_cfg, folder_idx):
 		print(f"  [FAST] Done: {folder}")
 
 
-def main():
-	if len(sys.argv) < 2:
-		print("Usage: python workers/pipeline_worker.py <job_json_path>")
-		sys.exit(1)
+def _parse_args():
+	parser = argparse.ArgumentParser(description='Schollab caiman+FAST pipeline worker')
+	parser.add_argument('job_json_path', help='Path to pipeline job JSON (e.g. /tmp/pipeline_job.json)')
+	parser.add_argument(
+		'--skip-caiman',
+		action='store_true',
+		help='Skip CaImAn registration; run FAST only (requires registered.h5 per folder)'
+	)
+	return parser.parse_args()
 
-	job_path = sys.argv[1]
+
+def main():
+	args = _parse_args()
+	job_path = args.job_json_path
 	if not os.path.exists(job_path):
 		print(f"ERROR: Job file not found: {job_path}")
 		sys.exit(1)
@@ -138,16 +149,21 @@ def main():
 	with open(job_path) as f:
 		job = json.load(f)
 
-	sessions         = job["sessions"]
-	proc_selections  = np.array(job["process_selections"])   # shape: 4×N
-	n_sessions       = len(sessions)
-	run_id           = job.get("run_id", "unknown")
+	sessions = job["sessions"]
+	proc_selections = np.array(job["process_selections"])   # shape: 4×N
+	skip_caiman = resolve_skip_caiman(job.get("skip_caiman", False), args.skip_caiman)
+	proc_selections = apply_skip_caiman(proc_selections, skip_caiman)
+	n_sessions = len(sessions)
+	run_id = job.get("run_id", "unknown")
 
 	run_t0 = time.perf_counter()
 	rusage_self_t0 = resource.getrusage(resource.RUSAGE_SELF)
 	rusage_child_t0 = resource.getrusage(resource.RUSAGE_CHILDREN)
 
 	print(f"pipeline_worker: {n_sessions} folder(s) to process (run_id={run_id})")
+	print(f"skip_caiman: {skip_caiman}")
+	if skip_caiman:
+		print("  CaImAn steps skipped — FAST only (requires registered.h5)")
 	for s in sessions:
 		print(f"  {s}")
 	print()
@@ -160,24 +176,25 @@ def main():
 			print(f"Folder {i+1}/{n_sessions}: {folder}")
 			print(f"{'='*60}")
 
-			# Step 1: caiman motion correction for this folder only.
-			# Passes a 4×1 slice so register_bulk processes exactly one session.
-			print(f"  [caiman] Starting motion correction...")
-			try:
-				register_bulk([folder], proc_selections[:, i:i+1])
-				print(f"  [caiman] Done: {folder}")
-			except Exception as e:
-				print(f"  [caiman] ERROR on {folder}: {e}")
-				print(f"  Skipping FAST for this folder and continuing.")
-				continue
+			if not skip_caiman:
+				# Step 1: caiman motion correction for this folder only.
+				print(f"  [caiman] Starting motion correction...")
+				try:
+					register_bulk([folder], proc_selections[:, i:i+1])
+					print(f"  [caiman] Done: {folder}")
+				except Exception as e:
+					print(f"  [caiman] ERROR on {folder}: {e}")
+					print(f"  Skipping FAST for this folder and continuing.")
+					continue
+			else:
+				print("  [caiman] Skipped (skip_caiman=true)")
 
 			# FAST consumes registered.h5 from CaImAn. TIFs→H5 alone only makes unregistered.h5.
 			registered_h5 = os.path.join(folder, 'registered.h5')
 			if not os.path.isfile(registered_h5):
 				print(
 					"  [FAST] Skipping — registered.h5 not found.\n"
-					"  If you used TIFs→.H5, also check at least one motion step "
-					"(First Rigid, Addl. Rigid, or NoRMCorre) so CaImAn writes registered.h5."
+					"  Run CaImAn first, or uncheck Skip CaImAn (FAST only) in the GUI."
 				)
 				continue
 
