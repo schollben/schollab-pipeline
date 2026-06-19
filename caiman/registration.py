@@ -49,10 +49,7 @@ except:
 
 import caiman as cm
 from caiman.motion_correction import MotionCorrect
-from caiman.source_extraction.cnmf import cnmf as cnmf
 from caiman.source_extraction.cnmf import params as params
-from caiman.utils.utils import download_demo
-from caiman.summary_images import local_correlations_movie_offline
 import tifffile
 
 # Import from renamed modules in the same caiman/ directory
@@ -60,9 +57,6 @@ from registration_gui import get_registration_options
 from pipeline_job import apply_skip_caiman
 from tif_to_h5 import tif_stacks_to_h5
 from tiff_compat import tiff_writer_append
-
-global mc
-
 
 def _caiman_n_processes():
 	raw = os.environ.get('CAIMAN_N_PROCESSES', CAIMAN_CONFIG.get('n_processes', 4))

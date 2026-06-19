@@ -191,36 +191,3 @@ def get_registration_options():
     do_nonrig = np.array([(path in selections[3]) for path in paths])
     proc_opts = np.vstack((do_h5, do_rig_1, do_rig_2, do_nonrig))
     return np.array(paths), proc_opts, skip_caiman
-
-
-def get_h5_size(h5_path):
-    '''
-    Just return the size of the given .h5 file.
-
-    Parameters:
-        h5_path(str): Path to h5 file.
-    Returns:
-        dims (tuple or None): Dimensions of the file.
-            If file does not exist, return None.
-    '''
-    import h5py
-    assert h5_path.endswith(('.h5', '.hdf5')), f"{h5_path} does not end with .h5 or .hdf5."
-    try:
-        with h5py.File(h5_path, 'r') as f:
-            key = 'mov' if 'mov' in f.keys() else 'data'
-            return f[key].shape
-    except FileNotFoundError:
-        print(f"Cannot give size for {h5_path} because it wasn't found.")
-        return None
-
-
-if __name__ == '__main__':
-    user_selections = get_registration_options()
-    if user_selections:
-        paths, proc_opts, skip_caiman = user_selections
-        print(f"\nskip_caiman: {skip_caiman}")
-        print("\nFinal selections:")
-        for i, row in enumerate(proc_opts):
-            print(f"\nChecklist {i + 1} selections:")
-            for path in paths[row]:
-                print(f"  {path}")

@@ -5,6 +5,8 @@ Why separate module: skip_caiman logic is testable without wx or systemd.
 """
 import os
 
+import numpy as np
+
 
 def apply_skip_caiman(process_selections, skip_caiman):
 	"""
@@ -14,12 +16,7 @@ def apply_skip_caiman(process_selections, skip_caiman):
 	"""
 	if not skip_caiman:
 		return process_selections
-	try:
-		import numpy as np
-		return np.zeros_like(process_selections, dtype=bool)
-	except ImportError:
-		# Fallback if numpy unavailable in a minimal test env.
-		return [[False] * len(row) for row in process_selections]
+	return np.zeros_like(process_selections, dtype=bool)
 
 
 def folders_missing_registered_h5(session_paths):

@@ -1,8 +1,6 @@
 from skimage import io
 import torch
 import os
-import numpy as np
-from scipy.ndimage.filters import gaussian_filter
 
 
 def space_to_depth(x, block_size):
@@ -60,23 +58,6 @@ def sampler(img: torch.Tensor, operation_seed_counter):
     return masks1, masks2
 
 
-def load3Dnpy2Tensor(dataPath: str, dataExtension: str) -> torch.Tensor:
-    imageAll = []
-    for imName in list(os.walk(dataPath, topdown=False))[-1][-1]:
-        print('load image name -----> ', imName)
-        imDir = dataPath + '//' + imName
-        if dataExtension == 'tif':
-            image = io.imread(imDir)
-            os.remove(imDir)
-        elif dataExtension == 'npy':
-            image = np.load(imDir)
-            os.remove(imDir)
-        print(image.shape)
-        imageTensor = torch.from_numpy(image / 1.0).float()
-        imageAll.append(imageTensor)
-    return imageAll
-
-
 def load3DImages2Tensor(dataPath: str, dataExtension: str, trainFrames: int = -1) -> torch.Tensor:
     imageAll = []
 
@@ -97,50 +78,3 @@ def load3DImages2Tensor(dataPath: str, dataExtension: str, trainFrames: int = -1
         except:
             pass
     return imageAll
-
-
-def split_into_patches(x, patchw, patchh, overlap):
-    t, c, w, h = x.shape
-    stepw = int(patchw * (1 - overlap))
-    steph = int(patchh * (1 - overlap))
-    patches = []
-    ranges = []
-    for i in range(0, w - patchw + 1, stepw):
-        for j in range(0, h - patchh + 1, steph):
-            patch = x[:, :, i:i + patchw, j:j + patchh]
-            patch_range = {
-                't_start': 0,
-                't_end': t,
-                'w_start': i,
-                'w_end': i + patchw,
-                'h_start': j,
-                'h_end': j + patchh
-            }
-            patches.append(patch)
-            ranges.append(patch_range)
-    return patches, ranges
-
-
-def process_patch(patch):
-    processed_patch = patch * 2
-    return processed_patch
-
-
-def reconstruct_data(patches, shape):
-    t, c, w, h = shape
-    result = torch.zeros(shape)
-
-    for patch, patch_range in patches:
-        result[:, :, patch_range['w_start']:patch_range['w_end'], patch_range['h_start']:patch_range['h_end']] = patch
-
-    return result
-
-
-def get_gaussian(s, sigma=1.0 / 8) -> np.ndarray:
-    temp = np.zeros(s)
-    coords = [i // 2 for i in s]
-    sigmas = [i * sigma for i in s]
-    temp[tuple(coords)] = 1
-    gaussian_map = gaussian_filter(temp, sigmas, 0, mode='constant', cval=0)
-    gaussian_map /= np.max(gaussian_map)
-    return gaussian_map

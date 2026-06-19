@@ -351,7 +351,7 @@ def _reset_dir(path: str, logger: logging.Logger):
 
 	Used in Step 1 (always re-export registered/ from h5 as source of truth)
 	and Step 3 (clear result/ to prevent stale partial TIFFs from a previous
-	crash causing the stack-size assertion error in tif_stacks_to_h5).
+	crash causing stack-size assertion errors in Step 4 merge).
 	"""
 	if os.path.exists(path):
 		shutil.rmtree(path)
@@ -467,7 +467,7 @@ def step3_inference(
 	Run denoising inference on all registered TIFF chunks using the trained model.
 
 	result/ is always cleared first to prevent stale TIFFs from a previous
-	crash causing a stack-size assertion failure in tif_stacks_to_h5 (Step 4).
+	crash causing a stack-size assertion failure in Step 4 merge).
 
 	goTesting uses args.test_path for input and args.results_dir for output.
 	It silently returns (no exception) on missing files, so we validate both

@@ -2,17 +2,18 @@ import glob
 import os
 import random
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from .data_process import load3DImages2Tensor
+
 
 class ReadDatasets(Dataset):
     """
-    Dataset class for loading 3D images for training, validation, and testing.
+    Dataset class for loading 3D images for training and validation.
     """
 
-    def __init__(self, dataPath: str, mode: str, dataType: str, denoising_strategy: str, dataExtension: str , trainFrames=-1):
+    def __init__(self, dataPath: str, mode: str, dataType: str, denoising_strategy: str, dataExtension: str, trainFrames=-1):
         super(ReadDatasets, self).__init__()
-        assert mode in ['train', 'val', 'test'], "Mode must be 'train', 'val', or 'test'."
+        assert mode in ['train', 'val'], "Mode must be 'train' or 'val'."
         assert dataType == '3D', "DataType must be '3D'."
         assert denoising_strategy == 'FAST', "Denoising strategy must be 'FAST'."
         assert dataExtension in ['tif', 'tiff'], "Data extension must be 'tif' or 'tiff'."
@@ -22,10 +23,10 @@ class ReadDatasets(Dataset):
         self.dataExtension = dataExtension
         self.inputFileNames = glob.glob(os.path.join(dataPath, '*.tif')) + glob.glob(os.path.join(dataPath, '*.tiff'))
         self.trainFrames = trainFrames
-        if mode in ['train', 'test']:
+        if mode == 'train':
             self.imageAll = load3DImages2Tensor(dataPath=dataPath, dataExtension=dataExtension, trainFrames=self.trainFrames)
             self.inputsNum = len(self.imageAll)
-        elif mode == 'val':
+        else:
             self.imageAll_gt = load3DImages2Tensor(dataPath=dataPath, dataExtension=dataExtension)
             path_raw = dataPath.replace("gt", "train")
             self.imageAll_raw = load3DImages2Tensor(dataPath=path_raw, dataExtension=dataExtension)
@@ -34,10 +35,7 @@ class ReadDatasets(Dataset):
     def __getitem__(self, item):
         if self.mode == 'train':
             return self._get_train_item(item)
-        elif self.mode == 'val':
-            return self._get_val_item(item)
-        else:
-            return self._get_test_item(item)
+        return self._get_val_item(item)
 
     def _get_train_item(self, item):
         image = self.imageAll[item]
@@ -77,18 +75,5 @@ class ReadDatasets(Dataset):
 
         return input_tensor, t, label_tensor
 
-    def _get_test_item(self, item):
-        image = self.imageAll[item]
-        t = image.shape[0]
-        image = torch.cat((image, image.flip(0)[:100, :, :]), dim=0)
-
-        input_tensor = torch.stack([image[i, ...] for i in range(image.shape[0])], dim=0).unsqueeze(0)
-        return input_tensor, t
-
     def __len__(self):
         return self.inputsNum
-
-if __name__ == '__main__':
-    path = r"path to data"
-    train_set = ReadDatasets(dataPath=path, mode='train', dataType='3D', denoising_strategy='FAST', dataExtension='tif')
-    train_loader = DataLoader(dataset=train_set, batch_size=1)
