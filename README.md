@@ -14,7 +14,8 @@ PreProcess2PImages/
 │   └── h5_to_tif.py         HDF5 → TIF utility
 ├── fast/                    FAST denoising
 │   ├── denoising.py         Entry point: reads config.json
-│   ├── config.json          Data folders + hyperparameters
+│   ├── config.json          Pipeline orchestration + hyperparameters
+│   ├── userparams.json      Training template (copy to fast_dir)
 │   ├── datasets/            PyTorch dataset + augmentation
 │   ├── models/              U-Net architecture
 │   └── utils/               H5/TIFF utilities, config loader
@@ -76,7 +77,7 @@ CAIMAN_N_PROCESSES=6 bash PreProcess2PImages.sh
 
 CaImAn thread caps such as `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, and `NUMEXPR_NUM_THREADS` respect existing environment values; otherwise the values in `caiman/config.json` are used.
 
-Only `n_processes` and `threads` are active today; sample-output and motion-parameter config entries are reserved for follow-up cleanup.
+Motion-correction parameters and sample TIFF export are hardcoded in [`caiman/registration.py`](caiman/registration.py) (not configurable via JSON).
 
 ### FAST CPU controls (`fast/config.json`)
 
@@ -88,6 +89,19 @@ FAST gets its own subprocess environment from [`fast/config.json`](fast/config.j
 - `h5_write_batch_frames`: frames loaded per batch when merging FAST result TIFFs into `inference.h5` in Step 4 (default `128`).
 
 The worker logs the FAST thread environment before launching `fast/denoising.py`, which makes `journalctl --user -u schollab-PreProcess2PImages` useful for checking the active CPU settings.
+
+### FAST training template (`userparams.json`)
+
+Step 2 loads `{fast_dir}/userparams.json` for model/training defaults (learning rate, GPU, seed, etc.). The pipeline overrides orchestration fields from [`fast/config.json`](fast/config.json) (`epochs`, `train_frames`, batch sizes, `num_workers`, paths).
+
+Copy [`fast/userparams.json`](fast/userparams.json) to your FAST install directory (see `fast_dir` in config):
+
+```bash
+mkdir -p "$HOME/Documents/FAST"
+cp fast/userparams.json "$HOME/Documents/FAST/userparams.json"
+```
+
+Tune `lr`, `gpu_ids`, and `seed` there; leave path placeholders empty — the worker sets `train_folder`, `results_dir`, and `checkpoint_path` at runtime.
 
 ### FAST scratch directory (`scratch_dir` in `fast/config.json`)
 
@@ -184,7 +198,6 @@ Memory intuition: one 1000-frame 512×512 stack is ~0.5 GB when fully loaded. Pe
 | Knob | Where | Effect | Increase when… | Decrease when… |
 |---|---|---|---|---|
 | `n_processes` / `CAIMAN_N_PROCESSES` | CaImAn | Parallel motion correction | Large host, low swap | Swap pressure, OOM |
-| `save_sample` / `sample_frames` | CaImAn | Preview TIFF export | Debugging | Extra disk/time |
 | `tiff_chunk_size` | FAST | Frames per inference stack | — | Step 3 OOM or high swap |
 | `h5_write_batch_frames` | FAST | Step 4 merge batch size | Stable host, fast Step 4 | Step 4 OOM after inference |
 | `num_workers` | FAST | DataLoader parallelism | Large training sets | Memory pressure |

@@ -1,24 +1,9 @@
 {
     "n_processes": 2,
-    "save_sample": true,
-    "sample_frames": 4000,
     "threads": {
         "OMP_NUM_THREADS": 1,
         "MKL_NUM_THREADS": 1,
         "OPENBLAS_NUM_THREADS": 1,
         "NUMEXPR_NUM_THREADS": 1
-    },
-    "motion": {
-        "fr": 30,
-        "decay_time": 1,
-        "dxy": [1.0, 1.0],
-        "max_shift_um": [32, 32],
-        "patch_motion_um": [64.0, 64.0],
-        "overlaps": [32, 32],
-        "max_deviation_rigid": 3,
-        "border_nan": "copy",
-        "nonneg_movie": false,
-        "use_cuda": false,
-        "niter_rig": 5
     }
 }

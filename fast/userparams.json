@@ -1,0 +1,22 @@
+{
+    "data_extension": "tif",
+    "data_type": "3D",
+    "denoising_strategy": "FAST",
+    "withGT": false,
+    "lr": 0.0001,
+    "weight_decay": 0.9,
+    "amsgrad": true,
+    "gpu_ids": "0",
+    "local_rank": 0,
+    "seed": 123,
+    "epochs": 10,
+    "miniBatch_size": 8,
+    "batch_size": 1,
+    "num_workers": 16,
+    "train_frames": 2000,
+    "save_freq": 10,
+    "mode": "train",
+    "results_dir": "",
+    "train_folder": "",
+    "checkpoint_path": ""
+}
