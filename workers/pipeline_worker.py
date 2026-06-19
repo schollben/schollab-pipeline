@@ -51,6 +51,50 @@ FAST_BASE_CFG   = os.path.join(FAST_DIR, 'config.json')
 FAST_BASE_CFG_LEGACY = os.path.join(FAST_DIR, 'pipeline_config.json')
 
 
+class _BatchLogTee:
+	"""Mirror stdout/stderr to consolidated batch log while keeping journal output."""
+
+	def __init__(self, path, stream):
+		os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+		self.file = open(path, 'a', encoding='utf-8')
+		self.stream = stream
+
+	def write(self, data):
+		self.stream.write(data)
+		self.file.write(data)
+		self.file.flush()
+
+	def flush(self):
+		self.stream.flush()
+		self.file.flush()
+
+	def fileno(self):
+		return self.stream.fileno()
+
+
+def _attach_batch_log(batch_log_path):
+	"""Tee worker prints to batch log; return originals for restore."""
+	if not batch_log_path:
+		return None, None, None
+	orig_out, orig_err = sys.stdout, sys.stderr
+	header = f"\n{'=' * 60}\nworker start {datetime.now().isoformat(timespec='seconds')}\n{'=' * 60}\n"
+	with open(batch_log_path, 'a', encoding='utf-8') as f:
+		f.write(header)
+	sys.stdout = _BatchLogTee(batch_log_path, orig_out)
+	sys.stderr = _BatchLogTee(batch_log_path, orig_err)
+	return orig_out, orig_err, batch_log_path
+
+
+def _detach_batch_log(orig_out, orig_err, batch_log_path, footer):
+	if orig_out is None:
+		return
+	sys.stdout = orig_out
+	sys.stderr = orig_err
+	if batch_log_path:
+		with open(batch_log_path, 'a', encoding='utf-8') as f:
+			f.write(footer)
+
+
 def _rusage_cpu_seconds(ru):
 	"""User + system CPU seconds from a resource usage struct."""
 	return ru.ru_utime + ru.ru_stime
@@ -128,6 +172,11 @@ def run_fast_on_folder(folder, base_cfg, folder_idx):
 		# FAST runs in a separate Python env; keep its numerical thread caps independent.
 		fast_env[key] = str(value)
 
+	batch_log = os.environ.get('SCHOLLAB_BATCH_LOG')
+	cmd = [FAST_PYTHON, FAST_SCRIPT, '--config', cfg_path]
+	if batch_log:
+		cmd.extend(['--batch-log', batch_log])
+
 	with open(cfg_path, "w") as f:
 		json.dump(single_cfg, f, indent=2)
 
@@ -135,8 +184,10 @@ def run_fast_on_folder(folder, base_cfg, folder_idx):
 	if fast_threads:
 		thread_summary = ", ".join(f"{key}={fast_env[key]}" for key in sorted(fast_threads))
 		print(f"  [FAST] Thread env: {thread_summary}")
+	if batch_log:
+		print(f"  [FAST] Batch log append: {batch_log}")
 	result = subprocess.run(
-		[FAST_PYTHON, FAST_SCRIPT, "--config", cfg_path],
+		cmd,
 		# Inherit stdout/stderr so output appears in journalctl
 		env=fast_env,
 		check=False
@@ -174,6 +225,8 @@ def main():
 	proc_selections = apply_skip_caiman(proc_selections, skip_caiman)
 	n_sessions = len(sessions)
 	run_id = job.get("run_id", "unknown")
+	batch_log_path_val = job.get("batch_log_path") or os.environ.get("SCHOLLAB_BATCH_LOG")
+	orig_out, orig_err, _ = _attach_batch_log(batch_log_path_val)
 
 	run_t0 = time.perf_counter()
 	wall_start_epoch = time.time()
@@ -182,6 +235,8 @@ def main():
 
 	wall_start_local = datetime.fromtimestamp(wall_start_epoch).strftime('%Y-%m-%d %H:%M:%S')
 	print(f"pipeline_worker: {n_sessions} folder(s) to process (run_id={run_id})")
+	if job.get("batch_id"):
+		print(f"pipeline_worker: batch_id={job['batch_id']}")
 	print(f"pipeline_worker: wall clock start {wall_start_local}")
 	print(
 		"pipeline_worker: systemd 'Consumed CPU time' at exit is total core-seconds "
@@ -194,6 +249,8 @@ def main():
 		state="starting",
 		n_sessions=n_sessions,
 	)
+	if batch_log_path_val:
+		print(f"pipeline_worker: batch log {batch_log_path_val}")
 	print(f"skip_caiman: {skip_caiman}")
 	if skip_caiman:
 		print("  CaImAn steps skipped — FAST only (requires registered.h5)")
@@ -262,6 +319,8 @@ def main():
 		print("pipeline_worker: all folders complete.")
 	finally:
 		_print_run_summary(run_t0, rusage_self_t0, rusage_child_t0, n_sessions, run_id, wall_start_epoch)
+		footer = f"\n{'=' * 60}\nworker end {datetime.now().isoformat(timespec='seconds')}\n{'=' * 60}\n"
+		_detach_batch_log(orig_out, orig_err, batch_log_path_val, footer)
 
 
 if __name__ == '__main__':

@@ -334,59 +334,45 @@ def register_bulk(sessions_to_run, process_selections):
 
 
 if __name__ == '__main__':
-	# Get folder selections from the GUI — returns (paths, 4×N bool array, skip_caiman)
-	workdirs, proc_opts, skip_caiman = get_registration_options()
+	# Get folder selections from the GUI — returns (paths, 4×N bool array, skip_caiman, run_mode, scheduled_at)
+	workdirs, proc_opts, skip_caiman, run_mode, scheduled_at = get_registration_options()
 	if workdirs is None:
 		print("No folders selected. Exiting.")
 		sys.exit(0)
 
 	proc_opts = apply_skip_caiman(proc_opts, skip_caiman)
 
-	# Write job file consumed by workers/pipeline_worker.py.
-	# Keeping this as a plain JSON file means any alternative launcher
-	# (CLI, web UI, etc.) can produce the same file to trigger the pipeline.
-	run_id = datetime.now().strftime('%Y%m%d%H%M%S')
-	unit_name = f'{UNIT_NAME}-{run_id}'
-	job = {
-		"sessions": workdirs.tolist(),
-		"process_selections": proc_opts.tolist(),
-		"skip_caiman": skip_caiman,
-		"run_id": run_id,
-		"unit_name": unit_name,
-	}
-	pathlib.Path(JOB_PATH).write_text(json.dumps(job, indent=2))
-	pathlib.Path(ACTIVE_UNIT_PATH).write_text(unit_name)
-	print(f"Job written to {JOB_PATH}")
-	print(f"Sessions queued: {len(workdirs)}")
-	print(f"skip_caiman: {skip_caiman}")
-	print(f"Run unit: {unit_name}")
-
-	# Clear any stale failed unit from a previous run (legacy fixed name).
-	subprocess.run(
-		["systemctl", "--user", "reset-failed", UNIT_NAME],
-		check=False
+	from pipeline_launcher import (
+		build_immediate_job,
+		build_scheduled_job,
+		launch_job_now,
+		persist_batch_job,
+		schedule_job,
+		write_job,
+		JOB_PATH,
 	)
 
-	# Launch workers/pipeline_worker.py as a transient systemd user service.
-	# Unique unit name per run so journal "Consumed CPU time" is scoped to this job.
-	systemd_cmd = [
-		"systemd-run", "--user",
-		f"--unit={unit_name}",
-		"--collect",
-		"--description=Schollab caiman+FAST pipeline",
-		f"--setenv=HOME={os.path.expanduser('~')}",
-		# Worker subprocess needs same prefix as GUI so FAST_PYTHON resolves correctly.
-		f"--setenv=SCHOLLAB_CONDA_ROOT={_schollab_conda_root()}",
-	]
-	systemd_cmd.extend(_caiman_thread_setenv_args())
-	systemd_cmd.extend(_fast_path_setenv_args())
-	if 'CAIMAN_N_PROCESSES' in os.environ:
-		# Keep one-off CLI overrides visible after systemd detaches the worker.
-		systemd_cmd.append(f"--setenv=CAIMAN_N_PROCESSES={os.environ['CAIMAN_N_PROCESSES']}")
-	systemd_cmd.extend([
-		CAIMAN_PYTHON, WORKER_SCRIPT, JOB_PATH
-	])
-	subprocess.run(systemd_cmd, check=True)
-
-	print(f"Pipeline launched as systemd service '{unit_name}'.")
-	print(f"Monitor: journalctl --user -f -u {unit_name}")
+	if run_mode == 'schedule':
+		if not scheduled_at:
+			print("ERROR: Schedule mode requires a valid scheduled_at.")
+			sys.exit(1)
+		job = build_scheduled_job(workdirs, proc_opts, skip_caiman, scheduled_at)
+		persisted = persist_batch_job(job)
+		write_job(job, JOB_PATH)
+		write_job(job, persisted)
+		print(f"Job written to {JOB_PATH}")
+		print(f"Persistent copy: {persisted}")
+		print(f"Sessions queued: {len(workdirs)}")
+		print(f"skip_caiman: {skip_caiman}")
+		print(f"batch_id: {job['batch_id']}")
+		print(f"Batch log: {job['batch_log_path']}")
+		schedule_job(persisted, scheduled_at)
+	else:
+		# Immediate run — legacy job JSON shape (no batch_id / batch_log_path required).
+		job = build_immediate_job(workdirs, proc_opts, skip_caiman)
+		write_job(job, JOB_PATH)
+		print(f"Job written to {JOB_PATH}")
+		print(f"Sessions queued: {len(workdirs)}")
+		print(f"skip_caiman: {skip_caiman}")
+		print(f"Run unit: {job['unit_name']}")
+		launch_job_now(JOB_PATH)

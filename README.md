@@ -19,9 +19,11 @@ PreProcess2PImages/
 │   ├── models/              U-Net architecture
 │   └── utils/               H5/TIFF utilities, config loader
 ├── tools/
-│   └── scan_sessions.py     Audit recording sessions before running
+│   ├── scan_sessions.py     Audit recording sessions before running
+│   └── schedule_batch.py    CLI: schedule / list / cancel batch jobs
 ├── workers/
-│   └── pipeline_worker.py    Headless per-folder caiman→FAST (systemd only)
+│   ├── pipeline_worker.py    Headless per-folder caiman→FAST (systemd)
+│   └── pipeline_dispatcher.py  Scheduled batch entry (lock + defer)
 ├── PreProcess2PImages.sh              Launcher: --setup, GUI + status/attach/stop + clean
 ├── caiman_conda_env.yml     CaImAn conda environment spec
 └── fast_pip_requirements.txt  FAST pip requirements
@@ -314,9 +316,51 @@ Inside `fast/denoising.py`, `process_folder()` uses this order:
 - Removing `_fast_complete` allows FAST to run the folder again (resume behavior depends on checkpoint files).
 - To avoid accidental skips, keep at least one motion-correction column enabled in the GUI defaults.
 
+## Scheduled batch runs
+
+Optional feature — **Run** in the GUI behaves exactly as before (immediate systemd launch, same job JSON shape). Scheduling adds batch metadata and a consolidated log.
+
+Queue multiple folders (with per-folder CaImAn step checkboxes) to run **sequentially** starting at a chosen time. Each **scheduled** batch gets one consolidated log at `{fast_dir}/logs/batch_{batch_id}.log`.
+
+Immediate runs and hand-written job files only need the original keys (`sessions`, `process_selections`, `skip_caiman`, `run_id`, `unit_name`). Batch fields are optional.
+
+### GUI
+
+1. Pick folders and step checkboxes as usual (**multiple folders in one picker session** — each gets its own row).
+2. Click **Run** for immediate start (unchanged behavior).
+3. *Optional:* set **Start at** under “Optional: schedule batch”, then click **Schedule batch**.
+
+### CLI
+
+```bash
+# After GUI wrote /tmp/pipeline_job.json, or hand-authored job JSON:
+python tools/schedule_batch.py --job /tmp/pipeline_job.json --at "2026-06-19T02:00:00"
+
+bash PreProcess2PImages.sh --schedule-at "2026-06-19T02:00:00"   # uses /tmp/pipeline_job.json
+bash PreProcess2PImages.sh --list-scheduled
+bash PreProcess2PImages.sh --cancel-scheduled 20260619-020000-a1b2
+bash PreProcess2PImages.sh --status   # includes scheduled batch list
+```
+
+Run immediately from a job file:
+
+```bash
+python tools/schedule_batch.py --job /path/to/batch.json --now
+```
+
+### Overlap policy
+
+If a batch is still running when the next scheduled batch fires, the new batch is **deferred 5 minutes** and retried until the machine is free (global lock at `/tmp/pipeline_batch.lock`).
+
+Persistent job copies live under `{fast_dir}/scheduled_jobs/` so timers survive reboot (requires `loginctl enable-linger` from `--setup`).
+
+---
+
 ## Alternate launchers
 
-The GUI produces a job file at `/tmp/pipeline_job.json`:
+The GUI produces a job file at `/tmp/pipeline_job.json`.
+
+**Immediate run (legacy / default):**
 ```json
 {
   "sessions": ["/mnt/bigdata/BRUKER/TSeries-001", "..."],
@@ -324,6 +368,20 @@ The GUI produces a job file at `/tmp/pipeline_job.json`:
   "skip_caiman": false,
   "run_id": "20250618143000",
   "unit_name": "schollab-PreProcess2PImages-20250618143000"
+}
+```
+
+**Scheduled batch (additional fields):**
+```json
+{
+  "batch_id": "20260619-020000-a1b2",
+  "sessions": ["/mnt/bigdata/BRUKER/TSeries-001", "..."],
+  "process_selections": [[true, false, true, false], ...],
+  "skip_caiman": false,
+  "run_id": "20250618143000",
+  "unit_name": "schollab-PreProcess2PImages-20250618143000",
+  "batch_log_path": "/home/user/Documents/FAST/logs/batch_20260619-020000-a1b2.log",
+  "scheduled_at": "2026-06-19T02:00:00"
 }
 ```
 Set `"skip_caiman": true` (or pass `--skip-caiman` to the worker) to skip CaImAn and run FAST only when `registered.h5` already exists:

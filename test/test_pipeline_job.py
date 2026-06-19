@@ -13,11 +13,15 @@ sys.path.insert(0, os.path.join(_REPO_ROOT, 'caiman'))
 
 from pipeline_job import (  # noqa: E402
 	apply_skip_caiman,
+	batch_log_path,
 	folders_missing_registered_h5,
+	make_batch_id,
 	resolve_skip_caiman,
 	run_timing_path,
+	validate_job,
 	write_run_timing,
 )
+from pipeline_launcher import build_immediate_job, build_job, build_scheduled_job  # noqa: E402
 
 
 class TestApplySkipCaiman(unittest.TestCase):
@@ -80,6 +84,69 @@ class TestRunTiming(unittest.TestCase):
 				self.assertEqual(data['state'], 'starting')
 			finally:
 				pj.run_timing_path = orig
+
+
+class TestBatchJobValidation(unittest.TestCase):
+	def test_validate_job_accepts_well_formed(self):
+		job = {
+			'sessions': ['/data/a', '/data/b'],
+			'process_selections': [
+				[True, True],
+				[True, False],
+				[False, False],
+				[False, False],
+			],
+		}
+		validate_job(job)
+
+	def test_validate_job_rejects_row_mismatch(self):
+		job = {
+			'sessions': ['/data/a', '/data/b'],
+			'process_selections': [[True], [True], [False], [False]],
+		}
+		with self.assertRaises(ValueError):
+			validate_job(job)
+
+	def test_make_batch_id_uses_scheduled_stamp(self):
+		bid = make_batch_id('2026-06-19T02:00:00')
+		self.assertTrue(bid.startswith('20260619-020000-'))
+
+	def test_build_job_includes_batch_log(self):
+		import numpy as np
+		with tempfile.TemporaryDirectory() as tmp:
+			job = build_scheduled_job(
+				np.array(['/data/a']),
+				np.array([[True], [True], [False], [False]]),
+				False,
+				'2026-06-19T02:00:00',
+				fast_dir=tmp,
+			)
+			self.assertIn('batch_id', job)
+			self.assertIn('batch_log_path', job)
+			self.assertIn('scheduled_at', job)
+			self.assertTrue(job['batch_log_path'].startswith(tmp))
+			self.assertTrue(job['batch_log_path'].endswith('.log'))
+
+	def test_build_immediate_job_legacy_shape(self):
+		"""Immediate GUI/CLI jobs match pre-scheduling JSON (no batch fields)."""
+		import numpy as np
+		job = build_immediate_job(
+			np.array(['/data/a', '/data/b']),
+			np.array([[True, False], [True, True], [False, False], [False, False]]),
+			False,
+		)
+		validate_job(job)
+		self.assertIn('run_id', job)
+		self.assertIn('unit_name', job)
+		self.assertNotIn('batch_id', job)
+		self.assertNotIn('batch_log_path', job)
+		self.assertNotIn('scheduled_at', job)
+
+	def test_batch_log_path_creates_logs_dir(self):
+		with tempfile.TemporaryDirectory() as tmp:
+			path = batch_log_path(tmp, 'test-batch')
+			self.assertTrue(path.endswith('batch_test-batch.log'))
+			self.assertTrue(os.path.isdir(os.path.join(tmp, 'logs')))
 
 
 if __name__ == '__main__':

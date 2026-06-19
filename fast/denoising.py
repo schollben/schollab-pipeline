@@ -212,7 +212,7 @@ class FolderPaths:
 # Logging
 # =============================================================================
 
-def setup_logging(log_path: str) -> logging.Logger:
+def setup_logging(log_path: str, batch_log_path: Optional[str] = None) -> logging.Logger:
 	"""
 	Configure file + console logger.
 
@@ -240,6 +240,11 @@ def setup_logging(log_path: str) -> logging.Logger:
 	ch.setFormatter(fmt)
 	logger.addHandler(fh)
 	logger.addHandler(ch)
+	if batch_log_path:
+		bh = logging.FileHandler(batch_log_path, mode='a')
+		bh.setLevel(logging.INFO)
+		bh.setFormatter(fmt)
+		logger.addHandler(bh)
 	return logger
 
 
@@ -731,6 +736,11 @@ def main():
 		default=default_fast_config_path(),
 		help='Path to FAST config JSON (default: fast/config.json next to denoising.py)'
 	)
+	parser.add_argument(
+		'--batch-log',
+		default=os.environ.get('SCHOLLAB_BATCH_LOG'),
+		help='Append INFO+ logs to consolidated batch log (scheduled batch runs)'
+	)
 	cli = parser.parse_args()
 
 	raw_cfg = load_pipeline_config(cli.config)
@@ -743,8 +753,9 @@ def main():
 	logs_dir = os.path.join(cfg.fast_dir, 'logs')
 	os.makedirs(logs_dir, exist_ok=True)
 	log_path = os.path.join(logs_dir, f'_pipeline_log_{run_ts}.txt')
+	batch_log_path = cli.batch_log or None
 
-	logger  = setup_logging(log_path)
+	logger  = setup_logging(log_path, batch_log_path=batch_log_path)
 	monitor = MemoryMonitor(logger, interval=30)
 	monitor.start()
 
