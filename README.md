@@ -220,6 +220,8 @@ journalctl --user -u schollab-PreProcess2PImages -f
 
 Healthy markers: CaImAn `motion correction starting/finished`, FAST `START`/`DONE step4_h5_export`, `Written: .../_fast_complete`, `pipeline_worker: all folders complete`. FAST `print` output can appear out of order in the journal due to buffering — use stage log lines above for progress.
 
+**Timing:** When a run ends, systemd prints `Consumed … CPU time`. That is **total core-seconds** across all CaImAn worker processes and FAST subprocesses — not wall clock. A ~1.5 h run with `n_processes=16` can legitimately show ~5 h CPU. Use `bash PreProcess2PImages.sh --status` for **wall elapsed** (from `/tmp/pipeline_run_<run_id>.timing.json`).
+
 ### Tuning workflow
 
 1. Pick one representative folder (medium size if possible).

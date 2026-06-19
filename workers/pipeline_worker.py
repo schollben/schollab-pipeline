@@ -20,6 +20,7 @@ import json
 import resource
 import subprocess
 import time
+from datetime import datetime
 
 # Repo root is parent of workers/ — worker moved from repo root so we need two dirnames.
 REPO_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -28,7 +29,7 @@ FAST_DIR    = os.path.join(REPO_DIR, 'fast')
 sys.path.insert(0, CAIMAN_DIR)
 
 from registration import register_bulk
-from pipeline_job import apply_skip_caiman, resolve_skip_caiman
+from pipeline_job import apply_skip_caiman, resolve_skip_caiman, write_run_timing
 import numpy as np  # registration applies CaImAn thread caps before NumPy is loaded.
 
 
@@ -55,24 +56,42 @@ def _rusage_cpu_seconds(ru):
 	return ru.ru_utime + ru.ru_stime
 
 
-def _print_run_summary(run_t0, rusage_self_t0, rusage_child_t0, n_sessions):
-	"""
-	Print wall and CPU time for this worker invocation only.
-
-	Why: systemd's trailing "Consumed CPU time" reuses a fixed unit name and often
-	under-counts FAST subprocess work — this summary is scoped to the current run.
-	"""
-	wall_s = time.perf_counter() - run_t0
+def _cpu_usage_since(rusage_self_t0, rusage_child_t0):
+	"""Worker + wait()'d child CPU seconds since run start (under-counts CaImAn pool)."""
 	rs = resource.getrusage(resource.RUSAGE_SELF)
 	rc = resource.getrusage(resource.RUSAGE_CHILDREN)
 	cpu_self = _rusage_cpu_seconds(rs) - _rusage_cpu_seconds(rusage_self_t0)
 	cpu_child = _rusage_cpu_seconds(rc) - _rusage_cpu_seconds(rusage_child_t0)
+	return cpu_self, cpu_child
+
+
+def _print_run_summary(run_t0, rusage_self_t0, rusage_child_t0, n_sessions, run_id, wall_start_epoch):
+	"""
+	Print wall and CPU time for this worker invocation only.
+
+	Why: systemd's trailing "Consumed CPU time" sums all cores in the cgroup and
+	often exceeds wall time (e.g. 5 h CPU for a 1.5 h run with n_processes=16).
+	This summary labels wall vs CPU explicitly; timing file survives OOM kills.
+	"""
+	wall_s = time.perf_counter() - run_t0
+	cpu_self, cpu_child = _cpu_usage_since(rusage_self_t0, rusage_child_t0)
 	cpu_total = cpu_self + cpu_child
+	write_run_timing(
+		run_id,
+		wall_start_epoch=wall_start_epoch,
+		run_t0=run_t0,
+		state="complete",
+		n_sessions=n_sessions,
+		cpu_self_s=round(cpu_self, 1),
+		cpu_child_s=round(cpu_child, 1),
+		exit_code=0,
+	)
 	print("")
 	print("=" * 60)
 	print(f"pipeline_worker: run summary ({n_sessions} folder(s))")
 	print(f"  wall time: {wall_s / 3600:.2f} h ({wall_s:.1f} s)")
-	print(f"  CPU time:  {cpu_total:.1f} s (worker {cpu_self:.1f} s + FAST {cpu_child:.1f} s)")
+	print(f"  CPU time:  {cpu_total / 3600:.2f} h ({cpu_total:.1f} s) — worker {cpu_self:.1f} s + subprocess {cpu_child:.1f} s")
+	print("  note: systemd 'Consumed CPU time' includes all CaImAn pool cores; it is not wall clock.")
 	print("=" * 60)
 
 
@@ -157,10 +176,24 @@ def main():
 	run_id = job.get("run_id", "unknown")
 
 	run_t0 = time.perf_counter()
+	wall_start_epoch = time.time()
 	rusage_self_t0 = resource.getrusage(resource.RUSAGE_SELF)
 	rusage_child_t0 = resource.getrusage(resource.RUSAGE_CHILDREN)
 
+	wall_start_local = datetime.fromtimestamp(wall_start_epoch).strftime('%Y-%m-%d %H:%M:%S')
 	print(f"pipeline_worker: {n_sessions} folder(s) to process (run_id={run_id})")
+	print(f"pipeline_worker: wall clock start {wall_start_local}")
+	print(
+		"pipeline_worker: systemd 'Consumed CPU time' at exit is total core-seconds "
+		"(often > wall time when CaImAn n_processes>1); use --status for wall duration."
+	)
+	write_run_timing(
+		run_id,
+		wall_start_epoch=wall_start_epoch,
+		run_t0=run_t0,
+		state="starting",
+		n_sessions=n_sessions,
+	)
 	print(f"skip_caiman: {skip_caiman}")
 	if skip_caiman:
 		print("  CaImAn steps skipped — FAST only (requires registered.h5)")
@@ -182,6 +215,18 @@ def main():
 				try:
 					register_bulk([folder], proc_selections[:, i:i+1])
 					print(f"  [caiman] Done: {folder}")
+					cpu_self, cpu_child = _cpu_usage_since(rusage_self_t0, rusage_child_t0)
+					write_run_timing(
+						run_id,
+						wall_start_epoch=wall_start_epoch,
+						run_t0=run_t0,
+						state="caiman_done",
+						n_sessions=n_sessions,
+						folder_idx=i + 1,
+						folder=folder,
+						cpu_self_s=round(cpu_self, 1),
+						cpu_child_s=round(cpu_child, 1),
+					)
 				except Exception as e:
 					print(f"  [caiman] ERROR on {folder}: {e}")
 					print(f"  Skipping FAST for this folder and continuing.")
@@ -200,11 +245,23 @@ def main():
 
 			# Step 2: FAST denoising — reads registered.h5 written by caiman
 			run_fast_on_folder(folder, base_cfg, i)
+			cpu_self, cpu_child = _cpu_usage_since(rusage_self_t0, rusage_child_t0)
+			write_run_timing(
+				run_id,
+				wall_start_epoch=wall_start_epoch,
+				run_t0=run_t0,
+				state="fast_done",
+				n_sessions=n_sessions,
+				folder_idx=i + 1,
+				folder=folder,
+				cpu_self_s=round(cpu_self, 1),
+				cpu_child_s=round(cpu_child, 1),
+			)
 
 		print(f"\n{'='*60}")
 		print("pipeline_worker: all folders complete.")
 	finally:
-		_print_run_summary(run_t0, rusage_self_t0, rusage_child_t0, n_sessions)
+		_print_run_summary(run_t0, rusage_self_t0, rusage_child_t0, n_sessions, run_id, wall_start_epoch)
 
 
 if __name__ == '__main__':

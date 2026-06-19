@@ -77,6 +77,55 @@ _active_unit() {
 	fi
 }
 
+# Human-readable duration from seconds (float ok).
+_format_duration() {
+	python3 -c "s=float('${1:-0}'); h=int(s//3600); m=int((s%3600)//60); sec=s%60; print(f'{h}h {m}m {sec:.0f}s' if h else f'{m}m {sec:.0f}s')"
+}
+
+# Show wall vs CPU timing — systemd "Consumed CPU time" is core-seconds, not wall clock.
+_show_run_timing() {
+	local run_id timing_file cpu_ns cpu_s
+	run_id=""
+	if [ -f "$JOB_FILE" ]; then
+		run_id=$(python3 -c "import json; print(json.load(open('${JOB_FILE}')).get('run_id',''))" 2>/dev/null || true)
+	fi
+	echo "── Run timing ───────────────────────────────────────"
+	if [ -n "$run_id" ]; then
+		timing_file="/tmp/pipeline_run_${run_id}.timing.json"
+		if [ -f "$timing_file" ]; then
+			python3 -c "
+import json, sys
+t = json.load(open('${timing_file}'))
+w = t.get('wall_elapsed_s', 0)
+print(f\"  run_id:        {t.get('run_id', '')}\")
+print(f\"  wall start:    {t.get('wall_start_iso', '')}\")
+print(f\"  wall elapsed:  {w:.0f} s ({w/3600:.2f} h)\")
+print(f\"  last state:    {t.get('state', '')}\")
+if t.get('folder'):
+    print(f\"  folder:        {t.get('folder', '')}\")
+cpu_self = t.get('cpu_self_s')
+cpu_child = t.get('cpu_child_s')
+if cpu_self is not None and cpu_child is not None:
+    total = float(cpu_self) + float(cpu_child)
+    print(f\"  worker CPU:    {total:.0f} s ({total/3600:.2f} h) — partial; excludes active CaImAn pool\")
+"
+		else
+			echo "  (no timing file yet: ${timing_file})"
+		fi
+	else
+		echo "  (no run_id in ${JOB_FILE})"
+	fi
+	if [ -n "${ACTIVE_UNIT:-}" ]; then
+		cpu_ns=$(systemctl --user show "$ACTIVE_UNIT" -p CPUUsageNSec --value 2>/dev/null || true)
+		if [ -n "$cpu_ns" ] && [ "$cpu_ns" != "[not set]" ]; then
+			cpu_s=$(python3 -c "print(int('${cpu_ns}')/1e9)")
+			echo "  systemd CPU:   $(_format_duration "$cpu_s") (all cores summed — not wall clock)"
+		fi
+	fi
+	echo "  tip: 5 h CPU for a 1.5 h run is normal with n_processes=16 (16× parallelism on CaImAn)."
+	echo ""
+}
+
 _resolve_fast_config() {
 	if [ -f "$FAST_CONFIG" ]; then
 		return 0
@@ -548,6 +597,7 @@ if [ "$MODE" = "status" ]; then
 	echo "  unit: $ACTIVE_UNIT"
 	systemctl --user status "$ACTIVE_UNIT" 2>/dev/null || echo "Service not active"
 	echo ""
+	_show_run_timing
 	echo "── Last 20 FAST log lines ───────────────────────────"
 	tail -20 "$(ls -t "$FAST_LOG_DIR"/_pipeline_log_*.txt 2>/dev/null | head -1)" 2>/dev/null \
 		|| echo "No FAST log file found"
@@ -560,8 +610,11 @@ if [ "$MODE" = "attach" ]; then
 	ACTIVE_UNIT="$(_active_unit)"
 	echo "Following pipeline output — Ctrl+C to detach (pipeline keeps running)"
 	echo "  unit: $ACTIVE_UNIT"
+	echo "  tip: systemd 'Consumed CPU time' at exit is core-seconds (not wall clock)."
 	echo ""
-	journalctl --user -f -u "$ACTIVE_UNIT"
+	journalctl --user -f -u "$ACTIVE_UNIT" || true
+	echo ""
+	_show_run_timing
 	exit 0
 fi
 
