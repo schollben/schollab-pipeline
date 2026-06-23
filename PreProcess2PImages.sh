@@ -15,11 +15,15 @@
 #   bash PreProcess2PImages.sh --clean_fast …          # same -- / --from-job / config fallback
 #   bash PreProcess2PImages.sh --clean_all …
 #   bash PreProcess2PImages.sh --setup                # conda envs (caiman + FAST), linger, scratch tmpfs
+#   bash PreProcess2PImages.sh --schedule-at "2026-06-19T02:00:00" --from-job
+#   bash PreProcess2PImages.sh --list-scheduled
+#   bash PreProcess2PImages.sh --cancel-scheduled BATCH_ID
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_NAME="schollab-PreProcess2PImages"
+PIPELINE_LOG_DIR="$REPO_DIR/log"
 FAST_LOG_DIR="$REPO_DIR/fast/logs"
 FAST_CONFIG="$REPO_DIR/fast/config.json"
 FAST_CONFIG_LEGACY="$REPO_DIR/fast/pipeline_config.json"
@@ -45,8 +49,19 @@ CLEAN_FROM_JOB=false
 CLEAN_YES=false
 PASSTHRU=false
 CLEAN_PATHS=()
+SCHEDULE_AT=""
+CANCEL_BATCH_ID=""
+PREV_ARG=""
 
 for arg in "$@"; do
+	if [ -n "$PREV_ARG" ]; then
+		case "$PREV_ARG" in
+			--schedule-at)       SCHEDULE_AT="$arg"; MODE="schedule" ;;
+			--cancel-scheduled)  CANCEL_BATCH_ID="$arg"; MODE="cancel_scheduled" ;;
+		esac
+		PREV_ARG=""
+		continue
+	fi
 	if $PASSTHRU; then
 		CLEAN_PATHS+=("$arg")
 		continue
@@ -63,6 +78,8 @@ for arg in "$@"; do
 		--clean_fast)   MODE="clean_fast"    ;;
 		--clean_all)    MODE="clean_all"     ;;
 		--confirm)      CONFIRM=true         ;;
+		--list-scheduled) MODE="list_scheduled" ;;
+		--schedule-at|--cancel-scheduled) PREV_ARG="$arg" ;;
 	esac
 done
 
@@ -124,6 +141,10 @@ if cpu_self is not None and cpu_child is not None:
 	fi
 	echo "  tip: 5 h CPU for a 1.5 h run is normal with n_processes=16 (16× parallelism on CaImAn)."
 	echo ""
+}
+
+_show_scheduled_batches() {
+	python3 "$REPO_DIR/tools/schedule_batch.py" --list
 }
 
 _resolve_fast_config() {
@@ -491,6 +512,7 @@ _setup_run() {
 	loginctl enable-linger "$USER"
 	echo ""
 	mkdir -p "$FAST_LOG_DIR"
+	mkdir -p "$PIPELINE_LOG_DIR"
 	echo "── FAST scratch tmpfs ─────────────────────────────────"
 	_ensure_scratch_tmpfs
 	echo ""
@@ -589,6 +611,36 @@ if [ "$MODE" = "clean_all" ]; then
 	exit 0
 fi
 
+# ── scheduled batch modes ─────────────────────────────────────────────────────
+
+if [ "$MODE" = "list_scheduled" ]; then
+	_show_scheduled_batches
+	exit 0
+fi
+
+if [ "$MODE" = "cancel_scheduled" ]; then
+	if [ -z "$CANCEL_BATCH_ID" ]; then
+		echo "ERROR: --cancel-scheduled requires BATCH_ID"
+		exit 1
+	fi
+	python3 "$REPO_DIR/tools/schedule_batch.py" --cancel "$CANCEL_BATCH_ID"
+	exit 0
+fi
+
+if [ "$MODE" = "schedule" ]; then
+	if [ -z "$SCHEDULE_AT" ]; then
+		echo "ERROR: --schedule-at requires ISO datetime (e.g. 2026-06-19T02:00:00)"
+		exit 1
+	fi
+	if [ ! -f "$JOB_FILE" ]; then
+		echo "ERROR: Job file not found: $JOB_FILE"
+		echo "  Launch the GUI and click Schedule, or create $JOB_FILE first."
+		exit 1
+	fi
+	python3 "$REPO_DIR/tools/schedule_batch.py" --job "$JOB_FILE" --at "$SCHEDULE_AT"
+	exit 0
+fi
+
 # ── status mode ───────────────────────────────────────────────────────────────
 
 if [ "$MODE" = "status" ]; then
@@ -598,7 +650,17 @@ if [ "$MODE" = "status" ]; then
 	systemctl --user status "$ACTIVE_UNIT" 2>/dev/null || echo "Service not active"
 	echo ""
 	_show_run_timing
-	echo "── Last 20 FAST log lines ───────────────────────────"
+	echo "── Scheduled batches ────────────────────────────────"
+	_show_scheduled_batches
+	echo "── Last combined run log (summary) ─────────────────"
+	LATEST_SUMMARY="$(ls -t "$PIPELINE_LOG_DIR"/*.log 2>/dev/null | grep -v '\.verbose\.log$' | grep -v '\.fast\.log$' | head -1)"
+	if [ -n "$LATEST_SUMMARY" ]; then
+		echo "  file: $LATEST_SUMMARY"
+		tail -20 "$LATEST_SUMMARY"
+	else
+		echo "No pipeline summary log in $PIPELINE_LOG_DIR"
+	fi
+	echo "── Last FAST detail log (standalone or legacy) ─────"
 	tail -20 "$(ls -t "$FAST_LOG_DIR"/_pipeline_log_*.txt 2>/dev/null | head -1)" 2>/dev/null \
 		|| echo "No FAST log file found"
 	exit 0
@@ -610,7 +672,6 @@ if [ "$MODE" = "attach" ]; then
 	ACTIVE_UNIT="$(_active_unit)"
 	echo "Following pipeline output — Ctrl+C to detach (pipeline keeps running)"
 	echo "  unit: $ACTIVE_UNIT"
-	echo "  tip: systemd 'Consumed CPU time' at exit is core-seconds (not wall clock)."
 	echo ""
 	journalctl --user -f -u "$ACTIVE_UNIT" || true
 	echo ""
@@ -647,6 +708,7 @@ fi
 loginctl enable-linger "$USER"
 
 mkdir -p "$FAST_LOG_DIR"
+mkdir -p "$PIPELINE_LOG_DIR"
 
 # FAST scratch tmpfs — disabled: use disk-backed scratch_dir in fast/config.json.
 # _ensure_scratch_tmpfs
@@ -663,7 +725,8 @@ echo ""
 
 echo ""
 echo "Useful commands:"
-echo "  Follow live output:  bash PreProcess2PImages.sh --attach"
-echo "  Check status:        bash PreProcess2PImages.sh --status"
-echo "  Stop pipeline:       bash PreProcess2PImages.sh --stop"
+	echo "  Follow live output:  bash PreProcess2PImages.sh --attach"
+	echo "  Check status:        bash PreProcess2PImages.sh --status"
+	echo "  List scheduled:      bash PreProcess2PImages.sh --list-scheduled"
+	echo "  Stop pipeline:       bash PreProcess2PImages.sh --stop"
 echo "  Raw journal:         journalctl --user -f -u \$(cat ${ACTIVE_UNIT_FILE} 2>/dev/null || echo ${UNIT_NAME})"

@@ -19,9 +19,11 @@ PreProcess2PImages/
 │   ├── models/              U-Net architecture
 │   └── utils/               H5/TIFF utilities, config loader
 ├── tools/
-│   └── scan_sessions.py     Audit recording sessions before running
+│   ├── scan_sessions.py     Audit recording sessions before running
+│   └── schedule_batch.py    CLI: schedule / list / cancel batch jobs
 ├── workers/
-│   └── pipeline_worker.py    Headless per-folder caiman→FAST (systemd only)
+│   ├── pipeline_worker.py    Headless per-folder caiman→FAST (systemd)
+│   └── pipeline_dispatcher.py  Scheduled batch entry (lock + defer)
 ├── PreProcess2PImages.sh              Launcher: --setup, GUI + status/attach/stop + clean
 ├── caiman_conda_env.yml     CaImAn conda environment spec
 └── fast_pip_requirements.txt  FAST pip requirements
@@ -314,9 +316,63 @@ Inside `fast/denoising.py`, `process_folder()` uses this order:
 - Removing `_fast_complete` allows FAST to run the folder again (resume behavior depends on checkpoint files).
 - To avoid accidental skips, keep at least one motion-correction column enabled in the GUI defaults.
 
+## Pipeline run logs
+
+Each pipeline run (immediate or scheduled) writes three files under **`log/`** at the repo root, sharing one timestamp from `run_id` (e.g. `20260528-143012`):
+
+| File | Contents |
+|------|----------|
+| `log/{ts}.log` | **Combined summary** — one block per data folder (CaImAn + FAST ops, artifacts, wall time, OVERALL line) |
+| `log/{ts}.verbose.log` | Full stdout/stderr tee (journal mirror) |
+| `log/{ts}.fast.log` | FAST step detail (memory stats, tracebacks) |
+
+`bash PreProcess2PImages.sh --status` tails the latest summary log. Standalone `python fast/denoising.py` (outside the worker) still defaults to `fast/logs/_pipeline_log_*.txt`.
+
+## Scheduled batch runs
+
+Optional feature — **Run** in the GUI behaves exactly as before (immediate systemd launch). Scheduling adds batch metadata and the same `log/` files as immediate runs.
+
+Queue multiple folders (with per-folder CaImAn step checkboxes) to run **sequentially** starting at a chosen time.
+
+Immediate runs and hand-written job files need `sessions`, `process_selections`, `skip_caiman`, `run_id`, `unit_name`. Log paths are added automatically at launch if omitted.
+
+### GUI
+
+1. Pick folders and step checkboxes as usual (**multiple folders in one picker session** — each gets its own row).
+2. Click **Run** for immediate start (unchanged behavior).
+3. *Optional:* set **Start at** under “Optional: schedule batch”, then click **Schedule batch**.
+
+### CLI
+
+```bash
+# After GUI wrote /tmp/pipeline_job.json, or hand-authored job JSON:
+python tools/schedule_batch.py --job /tmp/pipeline_job.json --at "2026-06-19T02:00:00"
+
+bash PreProcess2PImages.sh --schedule-at "2026-06-19T02:00:00"   # uses /tmp/pipeline_job.json
+bash PreProcess2PImages.sh --list-scheduled
+bash PreProcess2PImages.sh --cancel-scheduled 20260619-020000-a1b2
+bash PreProcess2PImages.sh --status   # includes scheduled batch list
+```
+
+Run immediately from a job file:
+
+```bash
+python tools/schedule_batch.py --job /path/to/batch.json --now
+```
+
+### Overlap policy
+
+If a batch is still running when the next scheduled batch fires, the new batch is **deferred 5 minutes** and retried until the machine is free (global lock at `/tmp/pipeline_batch.lock`).
+
+Persistent job copies live under `{fast_dir}/scheduled_jobs/` so timers survive reboot (requires `loginctl enable-linger` from `--setup`).
+
+---
+
 ## Alternate launchers
 
-The GUI produces a job file at `/tmp/pipeline_job.json`:
+The GUI produces a job file at `/tmp/pipeline_job.json`.
+
+**Immediate run (legacy / default):**
 ```json
 {
   "sessions": ["/mnt/bigdata/BRUKER/TSeries-001", "..."],
@@ -324,6 +380,23 @@ The GUI produces a job file at `/tmp/pipeline_job.json`:
   "skip_caiman": false,
   "run_id": "20250618143000",
   "unit_name": "schollab-PreProcess2PImages-20250618143000"
+}
+```
+
+**Scheduled batch (additional fields):**
+```json
+{
+  "batch_id": "20260619-020000-a1b2",
+  "sessions": ["/mnt/bigdata/BRUKER/TSeries-001", "..."],
+  "process_selections": [[true, false, true, false], ...],
+  "skip_caiman": false,
+  "run_id": "20250618143000",
+  "unit_name": "schollab-PreProcess2PImages-20250618143000",
+  "run_log_path": "/path/to/schollab-pipeline/log/20250618-143000.log",
+  "verbose_log_path": "/path/to/schollab-pipeline/log/20250618-143000.verbose.log",
+  "fast_log_path": "/path/to/schollab-pipeline/log/20250618-143000.fast.log",
+  "batch_log_path": "/path/to/schollab-pipeline/log/20250618-143000.verbose.log",
+  "scheduled_at": "2026-06-19T02:00:00"
 }
 ```
 Set `"skip_caiman": true` (or pass `--skip-caiman` to the worker) to skip CaImAn and run FAST only when `registered.h5` already exists:

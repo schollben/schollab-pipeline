@@ -1,4 +1,6 @@
 import os
+from datetime import datetime, timedelta
+
 import numpy as np
 import wx
 import wx.lib.agw.multidirdialog as MDD
@@ -93,11 +95,42 @@ class CheckListFrame(wx.Frame):
 
         main_sizer.Add(grid_sizer, 1, wx.EXPAND | wx.ALL, border=10)
 
+        # Optional batch scheduling — does not affect immediate Run.
+        schedule_box = wx.StaticBox(self.panel, label='Optional: schedule batch')
+        schedule_panel = wx.Panel(self.panel)
+        schedule_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        tomorrow = datetime.now() + timedelta(days=1)
+        schedule_sizer.Add(wx.StaticText(schedule_panel, label='Start at (local):'), flag=wx.ALL | wx.ALIGN_CENTER_VERTICAL, border=5)
+        self.schedule_date = wx.TextCtrl(
+            schedule_panel, value=tomorrow.strftime('%Y-%m-%d'), size=(110, -1)
+        )
+        self.schedule_time = wx.TextCtrl(
+            schedule_panel, value='02:00', size=(60, -1)
+        )
+        schedule_sizer.Add(self.schedule_date, flag=wx.ALL, border=5)
+        schedule_sizer.Add(self.schedule_time, flag=wx.ALL, border=5)
+        schedule_panel.SetSizer(schedule_sizer)
+        schedule_outer = wx.StaticBoxSizer(schedule_box, wx.VERTICAL)
+        schedule_outer.Add(schedule_panel, flag=wx.EXPAND)
+        schedule_outer.Add(
+            wx.StaticText(
+                self.panel,
+                label='Use the folder picker to select multiple sessions (Ctrl/Cmd+click). '
+                      'All rows are queued sequentially in one batch.'
+            ),
+            flag=wx.LEFT | wx.RIGHT | wx.BOTTOM,
+            border=8,
+        )
+        main_sizer.Add(schedule_outer, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, border=5)
+
         button_panel = wx.Panel(self)
         button_sizer = wx.BoxSizer(wx.HORIZONTAL)
         run_btn = wx.Button(button_panel, label="Run")
-        run_btn.Bind(wx.EVT_BUTTON, self.on_close)
+        run_btn.Bind(wx.EVT_BUTTON, self.on_run_now)
+        schedule_btn = wx.Button(button_panel, label="Schedule batch")
+        schedule_btn.Bind(wx.EVT_BUTTON, self.on_schedule)
         button_sizer.Add(run_btn, 0, wx.ALL, 10)
+        button_sizer.Add(schedule_btn, 0, wx.ALL, 10)
         button_panel.SetSizer(button_sizer)
 
         outer_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -138,25 +171,7 @@ class CheckListFrame(wx.Frame):
         for checkbox in self.checkboxes[column]:
             checkbox.SetValue(should_check)
 
-    def on_close(self, event):
-        skip_caiman = self.skip_caiman_cb.GetValue()
-        if skip_caiman:
-            missing = folders_missing_registered_h5(self.paths)
-            if missing:
-                preview = '\n'.join(f'  {p}' for p in missing[:8])
-                if len(missing) > 8:
-                    preview += f'\n  ... and {len(missing) - 8} more'
-                dlg = wx.MessageDialog(
-                    self,
-                    f'{len(missing)} folder(s) have no registered.h5 — FAST will skip them:\n\n{preview}\n\nContinue anyway?',
-                    'Skip CaImAn (FAST only)',
-                    wx.YES_NO | wx.ICON_WARNING
-                )
-                if dlg.ShowModal() != wx.ID_YES:
-                    dlg.Destroy()
-                    return
-                dlg.Destroy()
-
+    def _collect_selections(self):
         selections = []
         for column_checkboxes in self.checkboxes:
             checked_paths = [
@@ -164,10 +179,75 @@ class CheckListFrame(wx.Frame):
                 if checkbox.GetValue()
             ]
             selections.append(checked_paths)
+        return selections
 
-        self.skip_caiman = skip_caiman
-        self.final_selections = selections
+    def _confirm_skip_caiman_if_needed(self):
+        skip_caiman = self.skip_caiman_cb.GetValue()
+        if not skip_caiman:
+            return True
+        missing = folders_missing_registered_h5(self.paths)
+        if not missing:
+            return True
+        preview = '\n'.join(f'  {p}' for p in missing[:8])
+        if len(missing) > 8:
+            preview += f'\n  ... and {len(missing) - 8} more'
+        dlg = wx.MessageDialog(
+            self,
+            f'{len(missing)} folder(s) have no registered.h5 — FAST will skip them:\n\n{preview}\n\nContinue anyway?',
+            'Skip CaImAn (FAST only)',
+            wx.YES_NO | wx.ICON_WARNING
+        )
+        ok = dlg.ShowModal() == wx.ID_YES
+        dlg.Destroy()
+        return ok
+
+    def _parse_schedule_datetime(self):
+        date_str = self.schedule_date.GetValue().strip()
+        time_str = self.schedule_time.GetValue().strip()
+        if len(time_str) == 5:
+            time_str = f'{time_str}:00'
+        try:
+            dt = datetime.fromisoformat(f'{date_str}T{time_str}')
+        except ValueError:
+            wx.MessageBox(
+                'Invalid schedule time. Use YYYY-MM-DD and HH:MM (24h).',
+                'Schedule error',
+                wx.OK | wx.ICON_ERROR
+            )
+            return None
+        if dt <= datetime.now():
+            wx.MessageBox(
+                'Schedule time must be in the future.',
+                'Schedule error',
+                wx.OK | wx.ICON_ERROR
+            )
+            return None
+        return dt.replace(microsecond=0).isoformat(timespec='seconds')
+
+    def on_run_now(self, event):
+        if not self._confirm_skip_caiman_if_needed():
+            return
+        self.skip_caiman = self.skip_caiman_cb.GetValue()
+        self.run_mode = 'now'
+        self.scheduled_at = None
+        self.final_selections = self._collect_selections()
         self.Close()
+
+    def on_schedule(self, event):
+        if not self._confirm_skip_caiman_if_needed():
+            return
+        scheduled_at = self._parse_schedule_datetime()
+        if scheduled_at is None:
+            return
+        self.skip_caiman = self.skip_caiman_cb.GetValue()
+        self.run_mode = 'schedule'
+        self.scheduled_at = scheduled_at
+        self.final_selections = self._collect_selections()
+        self.Close()
+
+    def on_close(self, event):
+        # Legacy handler — treat as run now.
+        self.on_run_now(event)
 
 
 def get_registration_options():
@@ -185,12 +265,14 @@ def get_registration_options():
         return None
 
     skip_caiman = getattr(frame, 'skip_caiman', False)
+    run_mode = getattr(frame, 'run_mode', 'now')
+    scheduled_at = getattr(frame, 'scheduled_at', None)
     do_h5 = np.array([(path in selections[0]) for path in paths])
     do_rig_1 = np.array([(path in selections[1]) for path in paths])
     do_rig_2 = np.array([(path in selections[2]) for path in paths])
     do_nonrig = np.array([(path in selections[3]) for path in paths])
     proc_opts = np.vstack((do_h5, do_rig_1, do_rig_2, do_nonrig))
-    return np.array(paths), proc_opts, skip_caiman
+    return np.array(paths), proc_opts, skip_caiman, run_mode, scheduled_at
 
 
 def get_h5_size(h5_path):
@@ -217,8 +299,11 @@ def get_h5_size(h5_path):
 if __name__ == '__main__':
     user_selections = get_registration_options()
     if user_selections:
-        paths, proc_opts, skip_caiman = user_selections
+        paths, proc_opts, skip_caiman, run_mode, scheduled_at = user_selections
         print(f"\nskip_caiman: {skip_caiman}")
+        print(f"run_mode: {run_mode}")
+        if scheduled_at:
+            print(f"scheduled_at: {scheduled_at}")
         print("\nFinal selections:")
         for i, row in enumerate(proc_opts):
             print(f"\nChecklist {i + 1} selections:")

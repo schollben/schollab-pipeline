@@ -212,7 +212,7 @@ class FolderPaths:
 # Logging
 # =============================================================================
 
-def setup_logging(log_path: str) -> logging.Logger:
+def setup_logging(log_path: str, batch_log_path: Optional[str] = None, file_mode: str = 'w') -> logging.Logger:
 	"""
 	Configure file + console logger.
 
@@ -232,7 +232,7 @@ def setup_logging(log_path: str) -> logging.Logger:
 		'[%(asctime)s] [%(levelname)-8s] %(message)s',
 		datefmt='%Y-%m-%d %H:%M:%S'
 	)
-	fh = logging.FileHandler(log_path)
+	fh = logging.FileHandler(log_path, mode=file_mode)
 	fh.setLevel(logging.DEBUG)
 	fh.setFormatter(fmt)
 	ch = logging.StreamHandler()
@@ -240,6 +240,11 @@ def setup_logging(log_path: str) -> logging.Logger:
 	ch.setFormatter(fmt)
 	logger.addHandler(fh)
 	logger.addHandler(ch)
+	if batch_log_path:
+		bh = logging.FileHandler(batch_log_path, mode='a')
+		bh.setLevel(logging.INFO)
+		bh.setFormatter(fmt)
+		logger.addHandler(bh)
 	return logger
 
 
@@ -320,24 +325,61 @@ class MemoryMonitor:
 			self.logger.debug(' | '.join(parts))
 
 
+class StepRecorder:
+	"""Collect per-step outcomes for pipeline run log summary JSON."""
+
+	def __init__(self):
+		self.steps = []
+
+	def record(self, name, status, duration_s, detail=None, error=None):
+		entry = {
+			'name': name,
+			'status': status,
+			'duration_s': round(duration_s, 1),
+		}
+		if detail:
+			entry['detail'] = detail
+		if error:
+			entry['error'] = error
+		self.steps.append(entry)
+
+	def skip_pair(self, reason):
+		"""Record steps 1-2 skipped together (resume / skip_training)."""
+		for name in ('step1_tiff_export', 'step2_training'):
+			self.record(name, 'skipped', 0, detail=reason)
+
+
 @contextmanager
-def log_step(logger: logging.Logger, monitor: MemoryMonitor, name: str):
+def log_step(logger: logging.Logger, monitor: MemoryMonitor, name: str, recorder=None):
 	"""
 	Context manager that wraps a pipeline step with:
 	  - Step label in MemoryMonitor so memory logs are tagged correctly
 	  - INFO log on entry and exit with elapsed wall-clock time
 	  - ERROR + full traceback via logger.exception() on failure, then re-raises
+	  - Optional StepRecorder for combined pipeline run log
 	"""
 	monitor.set_step(name)
 	logger.info(f"{'─'*50}")
 	logger.info(f"START  {name}")
 	t0 = time.time()
+	detail_holder = {'detail': None}
+
+	class StepDetail:
+		def set(self, value):
+			detail_holder['detail'] = value
+
 	try:
-		yield
-		logger.info(f"DONE   {name}  ({time.time() - t0:.1f}s)")
-	except Exception:
-		logger.error(f"FAILED {name}  ({time.time() - t0:.1f}s)")
-		logger.exception("Traceback:")  # includes stack trace automatically
+		yield StepDetail()
+		elapsed = time.time() - t0
+		logger.info(f"DONE   {name}  ({elapsed:.1f}s)")
+		if recorder is not None:
+			recorder.record(name, 'ok', elapsed, detail=detail_holder['detail'])
+	except Exception as exc:
+		elapsed = time.time() - t0
+		logger.error(f"FAILED {name}  ({elapsed:.1f}s)")
+		logger.exception("Traceback:")
+		if recorder is not None:
+			recorder.record(name, 'failed', elapsed, error=str(exc))
 		raise
 
 
@@ -390,7 +432,8 @@ def setup_cuda():
 # =============================================================================
 
 def step1_export_tiffs(
-	paths: FolderPaths, cfg: PipelineConfig, logger: logging.Logger, monitor: MemoryMonitor
+	paths: FolderPaths, cfg: PipelineConfig, logger: logging.Logger, monitor: MemoryMonitor,
+	recorder=None,
 ):
 	"""
 	Convert registered.h5 to TIFF chunks and copy first chunk to training/.
@@ -400,7 +443,7 @@ def step1_export_tiffs(
 	Only the first chunk is copied to training/ since self-supervised
 	training needs only a representative sample of the recording.
 	"""
-	with log_step(logger, monitor, 'step1_tiff_export'):
+	with log_step(logger, monitor, 'step1_tiff_export', recorder) as step_detail:
 		_reset_dir(paths.registered, logger)
 		_reset_dir(paths.training, logger)
 		logger.info(f"  TIFF chunk size: {cfg.tiff_chunk_size} frames")
@@ -414,11 +457,13 @@ def step1_export_tiffs(
 		shutil.copy2(first_tif, os.path.join(paths.training, os.path.basename(first_tif)))
 		logger.info(f"  Copied {os.path.basename(first_tif)} → training/")
 		logger.info(f"  Total TIFF chunks available for inference: {len(tif_files)}")
+		step_detail.set(f'registered/ ({len(tif_files)} chunks)')
 
 
 def step2_train(
 	paths: FolderPaths, cfg: PipelineConfig,
-	logger: logging.Logger, monitor: MemoryMonitor
+	logger: logging.Logger, monitor: MemoryMonitor,
+	recorder=None,
 ):
 	"""
 	Train the Unet_Lite denoiser on the first TIFF chunk.
@@ -431,7 +476,7 @@ def step2_train(
 	NOTE: train.py must derive checkpoint_dir from args.results_dir (not
 	args.train_folder parent) for the checkpoint to land on the correct drive.
 	"""
-	with log_step(logger, monitor, 'step2_training'):
+	with log_step(logger, monitor, 'step2_training', recorder) as step_detail:
 		with open(cfg.base_config_path, 'r') as f:
 			params = json.load(f)
 
@@ -457,11 +502,13 @@ def step2_train(
 		args.train_folder = paths.training
 		logger.info(f"  Training data: {args.train_folder}")
 		goTraining(args)
+		step_detail.set('checkpoint/')
 
 
 def step3_inference(
 	paths: FolderPaths, checkpoint_config: str,
-	logger: logging.Logger, monitor: MemoryMonitor
+	logger: logging.Logger, monitor: MemoryMonitor,
+	recorder=None,
 ):
 	"""
 	Run denoising inference on all registered TIFF chunks using the trained model.
@@ -473,7 +520,7 @@ def step3_inference(
 	It silently returns (no exception) on missing files, so we validate both
 	before and after to surface failures as proper exceptions.
 	"""
-	with log_step(logger, monitor, 'step3_inference'):
+	with log_step(logger, monitor, 'step3_inference', recorder) as step_detail:
 		# Guard: registered/ must have TIFFs — goTesting silently returns otherwise
 		reg_tifs = sort_tif_stack_paths(glob.glob(os.path.join(paths.registered, '*.tif')))
 		if not reg_tifs:
@@ -523,6 +570,7 @@ def step3_inference(
 				f"  Check GPU memory and checkpoint validity."
 			)
 		logger.info(f"  Result TIFFs written: {len(result_tifs)}")
+		step_detail.set(f'result/ ({len(result_tifs)} TIFFs)')
 
 		# Clean up temporary inference config
 		if os.path.exists(tmp_config):
@@ -579,7 +627,8 @@ def _stream_result_tifs_to_h5(result_dir: str, h5_savename: str, write_batch_fra
 
 
 def step4_export_h5(
-	paths: FolderPaths, cfg: PipelineConfig, logger: logging.Logger, monitor: MemoryMonitor
+	paths: FolderPaths, cfg: PipelineConfig, logger: logging.Logger, monitor: MemoryMonitor,
+	recorder=None,
 ):
 	"""
 	Merge all inference TIFF chunks from result/ (tmpfs) into inference.h5 (permanent drive).
@@ -588,15 +637,17 @@ def step4_export_h5(
 	for the next pipeline stage (source extraction / ROI detection).
 	Output file size is logged to make truncated writes easy to detect.
 	"""
-	with log_step(logger, monitor, 'step4_h5_export'):
+	with log_step(logger, monitor, 'step4_h5_export', recorder) as step_detail:
 		logger.info(f"  H5 write batch size: {cfg.h5_write_batch_frames} frames")
 		_stream_result_tifs_to_h5(paths.result, paths.inference_h5, cfg.h5_write_batch_frames)
 		size_gb = os.path.getsize(paths.inference_h5) / 1e9
 		logger.info(f"  Saved: {paths.inference_h5}  ({size_gb:.2f} GB)")
+		step_detail.set(f'inference.h5 ({size_gb:.2f} GB)')
 
 
 def step5_cleanup(
-	paths: FolderPaths, logger: logging.Logger, monitor: MemoryMonitor
+	paths: FolderPaths, logger: logging.Logger, monitor: MemoryMonitor,
+	recorder=None,
 ):
 	"""
 	Post-processing cleanup:
@@ -613,7 +664,7 @@ def step5_cleanup(
 	The scratch dir is only deleted if it differs from root — guard against
 	misconfiguration where SCRATCH_DIR equals the permanent data drive.
 	"""
-	with log_step(logger, monitor, 'step5_cleanup'):
+	with log_step(logger, monitor, 'step5_cleanup', recorder) as step_detail:
 		result_tifs = sort_tif_stack_paths(glob.glob(os.path.join(paths.result, '*.tif')))
 		if result_tifs:
 			dest = os.path.join(paths.root, os.path.basename(result_tifs[0]))
@@ -641,15 +692,29 @@ def step5_cleanup(
 		with open(paths.sentinel, 'w') as f:
 			f.write(datetime.datetime.now().isoformat())
 		logger.info(f"  Written: {paths.sentinel}")
+		step_detail.set('_fast_complete')
 
 
-# =============================================================================
-# Orchestrator
-# =============================================================================
+def _write_fast_summary(path, summary):
+	"""Write FAST folder summary JSON for pipeline_worker."""
+	if not path:
+		return
+	os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+	with open(path, 'w', encoding='utf-8') as f:
+		json.dump(summary, f, indent=2)
+
+
+def _inference_h5_detail(paths):
+	if os.path.isfile(paths.inference_h5):
+		size_gb = os.path.getsize(paths.inference_h5) / 1e9
+		return f'inference.h5 {size_gb:.2f} GB'
+	return None
+
 
 def process_folder(
 	dataFolder: str, cfg: PipelineConfig,
-	logger: logging.Logger, monitor: MemoryMonitor
+	logger: logging.Logger, monitor: MemoryMonitor,
+	recorder=None, summary_out=None,
 ):
 	"""
 	Orchestrate the full FAST pipeline for a single data folder.
@@ -664,58 +729,85 @@ def process_folder(
 	and partial intermediate files are cleaned up automatically.
 	"""
 	paths = FolderPaths.from_root(dataFolder, cfg.scratch_dir)
+	recorder = recorder or StepRecorder()
 
 	if not os.path.exists(paths.h5):
 		logger.warning(
 			f"SKIPPING — registered.h5 not found: {dataFolder}\n"
 			f"  Run CaImAn motion correction on this folder first."
 		)
-		return
+		summary = {
+			'result': 'not_run',
+			'reason': 'registered.h5 not found',
+			'steps': [],
+		}
+		_write_fast_summary(summary_out, summary)
+		return summary
 
 	# Sentinel check — only written after Step 5 fully completes
 	if os.path.exists(paths.sentinel):
 		logger.info(f"SKIPPING (complete): {dataFolder}")
-		return
+		detail = _inference_h5_detail(paths)
+		summary = {
+			'result': 'skipped',
+			'reason': '_fast_complete present',
+			'detail': detail,
+			'steps': [],
+		}
+		_write_fast_summary(summary_out, summary)
+		return summary
 
 	logger.info(f"\n{'='*60}")
 	logger.info(f"Processing: {dataFolder}")
 	logger.info(f"{'='*60}")
 
-	checkpoint_config = _find_latest_checkpoint_config(paths.checkpoint)
-	skip_training     = cfg.skip_training or (checkpoint_config is not None)
-
-	if not skip_training:
-		step1_export_tiffs(paths, cfg, logger, monitor)
-		step2_train(paths, cfg, logger, monitor)
+	try:
 		checkpoint_config = _find_latest_checkpoint_config(paths.checkpoint)
-	else:
-		reason = 'skip_training flag' if cfg.skip_training else f'checkpoint: {checkpoint_config}'
-		logger.info(f"[Steps 1-2] SKIPPED ({reason})")
+		skip_training     = cfg.skip_training or (checkpoint_config is not None)
 
-		# Check for actual TIFF files, not just directory existence.
-		# After a reboot or tmpfs issue the dir can exist but be empty.
-		reg_tifs = glob.glob(os.path.join(paths.registered, '*.tif'))
-		if not reg_tifs:
-			if os.path.isdir(paths.registered):
-				logger.warning("  registered/ exists but is EMPTY — re-running Step 1")
-			else:
-				logger.info("  registered/ missing — re-running Step 1")
-			step1_export_tiffs(paths, cfg, logger, monitor)
+		if not skip_training:
+			step1_export_tiffs(paths, cfg, logger, monitor, recorder)
+			step2_train(paths, cfg, logger, monitor, recorder)
+			checkpoint_config = _find_latest_checkpoint_config(paths.checkpoint)
+		else:
+			reason = 'skip_training flag' if cfg.skip_training else f'checkpoint: {checkpoint_config}'
+			logger.info(f"[Steps 1-2] SKIPPED ({reason})")
+			recorder.skip_pair(reason)
 
-	# Guard: fail loudly if no checkpoint was found or written
-	if checkpoint_config is None:
-		raise FileNotFoundError(
-			f"No valid checkpoint config.json found in {paths.checkpoint}"
-		)
+			reg_tifs = glob.glob(os.path.join(paths.registered, '*.tif'))
+			if not reg_tifs:
+				if os.path.isdir(paths.registered):
+					logger.warning("  registered/ exists but is EMPTY — re-running Step 1")
+				else:
+					logger.info("  registered/ missing — re-running Step 1")
+				step1_export_tiffs(paths, cfg, logger, monitor, recorder)
 
-	step3_inference(paths, checkpoint_config, logger, monitor)
-	step4_export_h5(paths, cfg, logger, monitor)
-	step5_cleanup(paths, logger, monitor)
+		if checkpoint_config is None:
+			raise FileNotFoundError(
+				f"No valid checkpoint config.json found in {paths.checkpoint}"
+			)
 
-	logger.info(f"Done: {dataFolder}")
-	logger.info(f"  checkpoint/  — model weights + config")
-	logger.info(f"  inference.h5 — denoised output")
-	logger.info(f"  *.tif        — example result stack")
+		step3_inference(paths, checkpoint_config, logger, monitor, recorder)
+		step4_export_h5(paths, cfg, logger, monitor, recorder)
+		step5_cleanup(paths, logger, monitor, recorder)
+
+		logger.info(f"Done: {dataFolder}")
+		logger.info(f"  checkpoint/  — model weights + config")
+		logger.info(f"  inference.h5 — denoised output")
+		logger.info(f"  *.tif        — example result stack")
+		summary = {'result': 'succeeded', 'steps': recorder.steps}
+		_write_fast_summary(summary_out, summary)
+		return summary
+	except Exception as exc:
+		summary = {
+			'result': 'failed',
+			'steps': recorder.steps,
+			'error': str(exc),
+		}
+		if not os.path.isfile(paths.inference_h5):
+			summary['artifacts_note'] = 'checkpoint/ (partial), no inference.h5, no _fast_complete'
+		_write_fast_summary(summary_out, summary)
+		raise
 
 
 # =============================================================================
@@ -731,6 +823,21 @@ def main():
 		default=default_fast_config_path(),
 		help='Path to FAST config JSON (default: fast/config.json next to denoising.py)'
 	)
+	parser.add_argument(
+		'--batch-log',
+		default=os.environ.get('SCHOLLAB_BATCH_LOG'),
+		help='Append INFO+ logs to consolidated verbose pipeline log'
+	)
+	parser.add_argument(
+		'--log-file',
+		default=os.environ.get('SCHOLLAB_FAST_LOG'),
+		help='FAST step-detail log path (repo log/ when run via pipeline_worker)'
+	)
+	parser.add_argument(
+		'--summary-out',
+		default=None,
+		help='Write per-folder FAST summary JSON for combined pipeline run log'
+	)
 	cli = parser.parse_args()
 
 	raw_cfg = load_pipeline_config(cli.config)
@@ -740,11 +847,20 @@ def main():
 	setup_cuda()
 
 	run_ts   = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-	logs_dir = os.path.join(cfg.fast_dir, 'logs')
+	if cli.log_file:
+		# Worker passes repo log/{ts}.fast.log — append across folders in one run.
+		log_path = cli.log_file
+		logs_dir = os.path.dirname(log_path) or '.'
+		log_mode = 'a'
+	else:
+		logs_dir = os.path.join(cfg.fast_dir, 'logs')
+		os.makedirs(logs_dir, exist_ok=True)
+		log_path = os.path.join(logs_dir, f'_pipeline_log_{run_ts}.txt')
+		log_mode = 'w'
 	os.makedirs(logs_dir, exist_ok=True)
-	log_path = os.path.join(logs_dir, f'_pipeline_log_{run_ts}.txt')
+	batch_log_path = cli.batch_log or None
 
-	logger  = setup_logging(log_path)
+	logger  = setup_logging(log_path, batch_log_path=batch_log_path, file_mode=log_mode)
 	monitor = MemoryMonitor(logger, interval=30)
 	monitor.start()
 
@@ -786,7 +902,10 @@ def main():
 			_write_marker('running')
 
 			try:
-				process_folder(folder, cfg, logger, monitor)
+				process_folder(
+					folder, cfg, logger, monitor,
+					summary_out=cli.summary_out,
+				)
 				_write_marker('running', {'last_completed_folder': folder})
 			except Exception:
 				logger.exception(

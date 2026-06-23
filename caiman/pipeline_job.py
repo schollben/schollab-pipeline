@@ -5,8 +5,16 @@ Why separate module: skip_caiman logic is testable without wx or systemd.
 """
 import json
 import os
+import secrets
 import time
 from datetime import datetime, timezone
+
+BATCH_LOCK_PATH = '/tmp/pipeline_batch.lock'
+JOB_PATH = '/tmp/pipeline_job.json'
+ACTIVE_UNIT_PATH = '/tmp/pipeline_active_unit.txt'
+UNIT_NAME = 'schollab-PreProcess2PImages'
+FAST_CONFIG_REL = os.path.join('fast', 'config.json')
+LEGACY_FAST_CONFIG_REL = os.path.join('fast', 'pipeline_config.json')
 
 
 def run_timing_path(run_id):
@@ -52,6 +60,160 @@ def write_run_timing(
 	with open(path, "w", encoding="utf-8") as f:
 		json.dump(payload, f, indent=2)
 	return path
+
+
+def make_batch_id(scheduled_at=None):
+	"""Stable batch ID for timer units, logs, and scheduled_jobs filename."""
+	stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+	if scheduled_at:
+		try:
+			dt = datetime.fromisoformat(scheduled_at)
+			stamp = dt.strftime('%Y%m%d-%H%M%S')
+		except ValueError:
+			pass
+	return f"{stamp}-{secrets.token_hex(2)}"
+
+
+def unit_name_for_run(run_id):
+	return f'{UNIT_NAME}-{run_id}'
+
+
+def _repo_root():
+	return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def resolve_fast_dir():
+	"""Resolve FAST install dir from env or fast/config.json."""
+	if os.environ.get('FAST_DIR'):
+		return os.path.abspath(os.path.expanduser(os.path.expandvars(os.environ['FAST_DIR'])))
+	repo = _repo_root()
+	for rel in (FAST_CONFIG_REL, LEGACY_FAST_CONFIG_REL):
+		cfg_path = os.path.join(repo, rel)
+		if os.path.exists(cfg_path):
+			with open(cfg_path, encoding='utf-8') as f:
+				raw = json.load(f).get('fast_dir', '~/Documents/FAST')
+			return os.path.abspath(os.path.expanduser(os.path.expandvars(raw)))
+	return os.path.abspath(os.path.expanduser('~/Documents/FAST'))
+
+
+def scheduled_jobs_dir(fast_dir=None):
+	path = os.path.join(fast_dir or resolve_fast_dir(), 'scheduled_jobs')
+	os.makedirs(path, exist_ok=True)
+	return path
+
+
+def batch_log_path(fast_dir, batch_id):
+	"""
+	Legacy FAST_DIR batch log path — prefer log_paths_for_run / attach_log_paths.
+
+	Kept for tests and old scheduled job JSON on disk.
+	"""
+	logs = os.path.join(fast_dir or resolve_fast_dir(), 'logs')
+	os.makedirs(logs, exist_ok=True)
+	return os.path.join(logs, f'batch_{batch_id}.log')
+
+
+def log_paths_for_run(repo_dir=None, run_id=None):
+	"""Repo-level log paths for one pipeline run (summary, verbose, FAST detail)."""
+	from pipeline_run_log import log_paths_for_run as _paths
+	repo = repo_dir or _repo_root()
+	rid = run_id or datetime.now().strftime('%Y%m%d%H%M%S')
+	return _paths(repo, rid)
+
+
+def attach_log_paths(job, repo_dir=None):
+	"""Add run_log_path, verbose_log_path, fast_log_path; alias batch_log_path."""
+	from pipeline_run_log import attach_log_paths as _attach
+	return _attach(job, repo_dir or _repo_root())
+
+
+def validate_job(job):
+	"""Raise ValueError if job JSON is missing keys or has inconsistent shape."""
+	required = ('sessions', 'process_selections')
+	for key in required:
+		if key not in job:
+			raise ValueError(f"Job missing required key: {key}")
+	sessions = job['sessions']
+	selections = job['process_selections']
+	if not sessions:
+		raise ValueError('Job must include at least one session folder')
+	if len(selections) != 4:
+		raise ValueError('process_selections must have 4 rows (TIFs→H5, rigid×2, nonrigid)')
+	n = len(sessions)
+	for row_idx, row in enumerate(selections):
+		if len(row) != n:
+			raise ValueError(
+				f'process_selections row {row_idx} length {len(row)} != sessions {n}'
+			)
+
+
+def persist_job(job, dest_path):
+	validate_job(job)
+	os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+	with open(dest_path, 'w', encoding='utf-8') as f:
+		json.dump(job, f, indent=2)
+	return dest_path
+
+
+def read_batch_lock():
+	if not os.path.isfile(BATCH_LOCK_PATH):
+		return None
+	try:
+		with open(BATCH_LOCK_PATH, encoding='utf-8') as f:
+			return json.load(f)
+	except (json.JSONDecodeError, OSError):
+		return None
+
+
+def _pid_alive(pid):
+	try:
+		os.kill(int(pid), 0)
+		return True
+	except (OSError, ValueError, TypeError):
+		return False
+
+
+def is_batch_running():
+	"""True if lock file points to an active worker unit or live PID."""
+	lock = read_batch_lock()
+	if not lock:
+		return False
+	unit = lock.get('unit_name')
+	if unit:
+		import subprocess
+		result = subprocess.run(
+			['systemctl', '--user', 'is-active', unit],
+			capture_output=True, text=True, check=False,
+		)
+		if result.stdout.strip() == 'active':
+			return True
+	pid = lock.get('pid')
+	if pid and _pid_alive(pid):
+		return True
+	return False
+
+
+def write_batch_lock(batch_id, unit_name, pid):
+	payload = {
+		'batch_id': batch_id,
+		'unit_name': unit_name,
+		'pid': pid,
+		'started_at': datetime.now().astimezone().isoformat(timespec='seconds'),
+	}
+	with open(BATCH_LOCK_PATH, 'w', encoding='utf-8') as f:
+		json.dump(payload, f, indent=2)
+
+
+def release_batch_lock():
+	if os.path.isfile(BATCH_LOCK_PATH):
+		os.remove(BATCH_LOCK_PATH)
+
+
+def try_acquire_batch_lock(batch_id, unit_name, pid):
+	if is_batch_running():
+		return False
+	write_batch_lock(batch_id, unit_name, pid)
+	return True
 
 
 def apply_skip_caiman(process_selections, skip_caiman):
