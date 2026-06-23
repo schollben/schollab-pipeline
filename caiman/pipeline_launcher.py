@@ -229,6 +229,8 @@ def launch_job_now(job_path):
 	subprocess.run(cmd, check=True)
 	print(f"Pipeline launched as systemd service '{unit_name}'.")
 	print(f"Monitor: journalctl --user -f -u {unit_name}")
+	if job.get('run_log_dir'):
+		print(f"Log dir: {job['run_log_dir']}")
 	if job.get('run_log_path'):
 		print(f"Summary log: {job['run_log_path']}")
 	if job.get('verbose_log_path'):
@@ -260,6 +262,7 @@ def schedule_job(job_path, scheduled_at):
 	print(f"  Start time:   {scheduled_at}")
 	print(f"  Job file:     {persisted}")
 	print(f"  Timer unit:   {timer_name}")
+	print(f"  Log dir:      {job['run_log_dir']}")
 	print(f"  Summary log:  {job['run_log_path']}")
 	print(f"  Verbose log:  {job['verbose_log_path']}")
 	print(f"  List timers:  systemctl --user list-timers '{BATCH_TIMER_PREFIX}-*'")
@@ -320,6 +323,7 @@ def print_scheduled_batches():
 		print(f"  scheduled_at: {job.get('scheduled_at', '(immediate)')}")
 		print(f"  folders:      {len(job.get('sessions', []))}")
 		print(f"  job file:     {job.get('_job_path', '')}")
+		print(f"  log dir:      {job.get('run_log_dir', '')}")
 		print(f"  summary log:  {job.get('run_log_path', '')}")
 		print(f"  verbose log:  {job.get('verbose_log_path', job.get('batch_log_path', ''))}")
 		_, timer_name = _batch_unit_names(job.get('batch_id', ''))

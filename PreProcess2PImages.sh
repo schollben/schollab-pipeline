@@ -653,7 +653,11 @@ if [ "$MODE" = "status" ]; then
 	echo "── Scheduled batches ────────────────────────────────"
 	_show_scheduled_batches
 	echo "── Last combined run log (summary) ─────────────────"
-	LATEST_SUMMARY="$(ls -t "$PIPELINE_LOG_DIR"/*.log 2>/dev/null | grep -v '\.verbose\.log$' | grep -v '\.fast\.log$' | head -1)"
+	LATEST_SUMMARY="$(find "$PIPELINE_LOG_DIR" -path '*/summary.log' -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -1)"
+	if [ -z "$LATEST_SUMMARY" ]; then
+		# Legacy flat layout: log/{ts}.log
+		LATEST_SUMMARY="$(ls -t "$PIPELINE_LOG_DIR"/*.log 2>/dev/null | grep -v '\.verbose\.log$' | grep -v '\.fast\.log$' | head -1)"
+	fi
 	if [ -n "$LATEST_SUMMARY" ]; then
 		echo "  file: $LATEST_SUMMARY"
 		tail -20 "$LATEST_SUMMARY"

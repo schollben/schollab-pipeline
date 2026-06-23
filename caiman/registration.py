@@ -467,6 +467,7 @@ if __name__ == '__main__':
 		print(f"skip_caiman: {skip_caiman}")
 		print(f"batch_id: {job['batch_id']}")
 		print(f"Summary log: {job['run_log_path']}")
+		print(f"Log dir: {job['run_log_dir']}")
 		print(f"Verbose log: {job['verbose_log_path']}")
 		schedule_job(persisted, scheduled_at)
 	else:

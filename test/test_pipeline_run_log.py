@@ -28,10 +28,11 @@ class TestLogPaths(unittest.TestCase):
 	def test_log_paths_for_run(self):
 		with tempfile.TemporaryDirectory() as tmp:
 			paths = log_paths_for_run(tmp, '20260528143012')
-			self.assertTrue(paths['run_log_path'].endswith('log/20260528-143012.log'))
-			self.assertTrue(paths['verbose_log_path'].endswith('.verbose.log'))
-			self.assertTrue(paths['fast_log_path'].endswith('.fast.log'))
-			self.assertTrue(os.path.isdir(os.path.join(tmp, 'log')))
+			self.assertTrue(paths['run_log_dir'].endswith('log/20260528-143012'))
+			self.assertTrue(paths['run_log_path'].endswith('log/20260528-143012/summary.log'))
+			self.assertTrue(paths['verbose_log_path'].endswith('/verbose.log'))
+			self.assertTrue(paths['fast_log_path'].endswith('/fast.log'))
+			self.assertTrue(os.path.isdir(paths['run_log_dir']))
 
 	def test_attach_log_paths_sets_batch_alias(self):
 		job = {'run_id': '20260528143012', 'sessions': ['/a'], 'process_selections': [[True]] * 4}

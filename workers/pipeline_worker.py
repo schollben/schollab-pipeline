@@ -267,6 +267,7 @@ def main():
 	run_log_path = job.get("run_log_path")
 	verbose_log_path = job.get("verbose_log_path") or job.get("batch_log_path")
 	log_paths = {
+		'run_log_dir': job.get('run_log_dir'),
 		'run_log_path': run_log_path,
 		'verbose_log_path': verbose_log_path,
 		'fast_log_path': job.get('fast_log_path'),
@@ -302,6 +303,8 @@ def main():
 	)
 	if run_log_path:
 		print(f"pipeline_worker: summary log {run_log_path}")
+	if job.get('run_log_dir'):
+		print(f"pipeline_worker: log dir {job['run_log_dir']}")
 	if verbose_log_path:
 		print(f"pipeline_worker: verbose log {verbose_log_path}")
 	print(f"skip_caiman: {skip_caiman}")
@@ -409,6 +412,7 @@ def main():
 				run_log_path=run_log_path,
 				wall_s=wall_s,
 				folder_outcomes=folder_outcomes,
+				run_log_dir=job.get('run_log_dir'),
 			)
 		_print_run_summary(run_t0, rusage_self_t0, rusage_child_t0, n_sessions, run_id, wall_start_epoch)
 		footer = f"\n{'=' * 60}\nworker end {datetime.now().isoformat(timespec='seconds')}\n{'=' * 60}\n"
