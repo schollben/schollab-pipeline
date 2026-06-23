@@ -38,6 +38,7 @@ import h5py
 import glob
 import pathlib
 import subprocess
+import time
 import numpy as np
 from datetime import datetime
 import sys
@@ -58,6 +59,7 @@ import tifffile
 # Import from renamed modules in the same caiman/ directory
 from registration_gui import get_registration_options
 from pipeline_job import apply_skip_caiman
+from pipeline_run_log import CAIMAN_STEP_LABELS
 from tif_to_h5 import tif_stacks_to_h5
 from tiff_compat import tiff_writer_append
 
@@ -241,6 +243,159 @@ def register_one_session(parent_dir, mc_dict, keep_memmap, save_sample, sample_n
 		_cleanup_memmaps(fnames_new, keep_memmap)
 
 
+def _h5_artifact_line(folder, filename):
+	"""Format H5 artifact with size for run log."""
+	path = os.path.join(folder, filename)
+	if os.path.isfile(path):
+		size_gb = os.path.getsize(path) / 1e9
+		return f'{filename} ({size_gb:.2f} GB)'
+	return None
+
+
+def _sample_tif_artifacts(folder):
+	"""List rigid/nonrigid sample TIFFs produced by motion correction."""
+	arts = []
+	for pattern in ('*_rigid.tif', '*_nonrigid.tif'):
+		for path in sorted(glob.glob(os.path.join(folder, pattern))):
+			arts.append(os.path.basename(path))
+	return arts
+
+
+def _selected_caiman_labels(row):
+	"""GUI column labels that were checked for this folder."""
+	return [CAIMAN_STEP_LABELS[i] for i, on in enumerate(row) if on]
+
+
+def _finalize_caiman_summary(folder, steps, row):
+	"""Derive succeeded / failed / incomplete from step outcomes and artifacts."""
+	selected = _selected_caiman_labels(row)
+	failed = next((s for s in steps if s.get('status') == 'failed'), None)
+	if failed:
+		return {
+			'steps': steps,
+			'selected': selected,
+			'result': 'failed',
+			'error': failed.get('error', 'step failed'),
+		}
+	reg = os.path.join(folder, 'registered.h5')
+	unreg = os.path.join(folder, 'unregistered.h5')
+	if os.path.isfile(reg):
+		return {'steps': steps, 'selected': selected, 'result': 'succeeded', 'error': None}
+	if row[0] and not any(row[1:4]) and os.path.isfile(unreg):
+		return {
+			'steps': steps,
+			'selected': selected,
+			'result': 'incomplete',
+			'error': 'no motion step — registered.h5 not created',
+		}
+	if not any(row):
+		return {'steps': steps, 'selected': selected, 'result': 'skipped', 'error': None}
+	return {
+		'steps': steps,
+		'selected': selected,
+		'result': 'incomplete',
+		'error': 'registered.h5 missing after CaImAn',
+	}
+
+
+def _register_one_folder(folder, row, mc_dict):
+	"""
+	Run CaImAn steps for one folder; return summary dict for pipeline run log.
+
+	Does not raise on step failure — caller checks summary['result'].
+	"""
+	steps = []
+	n_procs = 0
+	print(folder)
+
+	if row[0]:
+		t0 = time.perf_counter()
+		source_tifs = []
+		for f in glob.glob(os.path.join(folder, "*.tif")):
+			if 'References' in f:
+				continue
+			b = os.path.basename(f)
+			if b.endswith('_rigid.tif') or b.endswith('_nonrigid.tif'):
+				continue
+			source_tifs.append(f)
+		if not source_tifs:
+			print(f"WARNING: No source TIFs found in {folder}")
+			print(f"  Skipping TIFs→H5 step — registered.h5 left untouched.")
+			steps.append({
+				'name': CAIMAN_STEP_LABELS[0],
+				'status': 'skipped',
+				'duration_s': round(time.perf_counter() - t0, 1),
+				'detail': 'no source TIFs',
+			})
+		else:
+			try:
+				for stale_h5 in ['unregistered.h5', 'registered.h5']:
+					stale_path = os.path.join(folder, stale_h5)
+					if os.path.exists(stale_path):
+						os.remove(stale_path)
+						print(f"Deleted stale file: {stale_path}")
+				h5_name = os.path.join(folder, 'unregistered.h5')
+				tif_stacks_to_h5(folder, h5_name, frame_offset=False)
+				art = _h5_artifact_line(folder, 'unregistered.h5')
+				steps.append({
+					'name': CAIMAN_STEP_LABELS[0],
+					'status': 'ok',
+					'duration_s': round(time.perf_counter() - t0, 1),
+					'artifacts_line': art or 'unregistered.h5',
+				})
+			except Exception as exc:
+				steps.append({
+					'name': CAIMAN_STEP_LABELS[0],
+					'status': 'failed',
+					'duration_s': round(time.perf_counter() - t0, 1),
+					'error': str(exc),
+				})
+				return _finalize_caiman_summary(folder, steps, row)
+
+	for step_idx, sample_suffix in ((1, 'rigid'), (2, 'rigid'), (3, 'nonrigid')):
+		if not row[step_idx]:
+			continue
+		label = CAIMAN_STEP_LABELS[step_idx]
+		t0 = time.perf_counter()
+		try:
+			if step_idx == 3:
+				mc_dict['pw_rigid'] = True
+			else:
+				mc_dict['pw_rigid'] = False
+			n_procs += 1
+			register_one_session(
+				folder, mc_dict, keep_memmap=False,
+				save_sample=True, sample_name=f"{n_procs:02}_{sample_suffix}.tif",
+			)
+			arts = [_h5_artifact_line(folder, 'registered.h5')] + _sample_tif_artifacts(folder)
+			steps.append({
+				'name': label,
+				'status': 'ok',
+				'duration_s': round(time.perf_counter() - t0, 1),
+				'artifacts_line': ', '.join(a for a in arts if a),
+			})
+		except Exception as exc:
+			steps.append({
+				'name': label,
+				'status': 'failed',
+				'duration_s': round(time.perf_counter() - t0, 1),
+				'error': str(exc),
+				'detail': '(no registered.h5)',
+			})
+			return _finalize_caiman_summary(folder, steps, row)
+
+	if row[0] and not any(row[1:4]):
+		unreg = os.path.join(folder, 'unregistered.h5')
+		reg = os.path.join(folder, 'registered.h5')
+		if os.path.isfile(unreg) and not os.path.isfile(reg):
+			print(
+				"WARNING: TIFs→H5 wrote unregistered.h5 but no motion step was selected.\n"
+				"  Enable at least one of: First Rigid, Addl. Rigid, or NoRMCorre — "
+				"otherwise registered.h5 is never created and FAST will skip this folder."
+			)
+	return _finalize_caiman_summary(folder, steps, row)
+
+
 def register_bulk(sessions_to_run, process_selections):
 	"""
 	Run CaImAn motion correction on prepared .h5 stacks.
@@ -249,6 +404,9 @@ def register_bulk(sessions_to_run, process_selections):
 		sessions_to_run (list): Directory paths to find data in.
 		process_selections (np.array): 4×N bool array — rows are:
 			[TIFs→H5, first rigid, additional rigid, NoRMCorre]
+
+	Returns:
+		list[dict]: per-folder summary for pipeline run log (one entry per session).
 	"""
 	fr           = 30
 	decay_time   = 1
@@ -269,68 +427,11 @@ def register_bulk(sessions_to_run, process_selections):
 		'use_cuda': False, 'niter_rig': 5
 	}
 
+	summaries = []
 	for i in range(0, len(sessions_to_run)):
-		print(sessions_to_run[i])
-		n_procs = 0
-
-		if process_selections[0, i]:
-			# Verify source TIFs exist BEFORE deleting anything.
-			# Deleting registered.h5 first and then failing on missing TIFs
-			# would permanently destroy the only copy of the registered data.
-			# Exclude CaImAn sample exports — same idea as tif_to_h5._acquisition_tif_paths.
-			source_tifs = []
-			for f in glob.glob(os.path.join(sessions_to_run[i], "*.tif")):
-				if 'References' in f:
-					continue
-				b = os.path.basename(f)
-				if b.endswith('_rigid.tif') or b.endswith('_nonrigid.tif'):
-					continue
-				source_tifs.append(f)
-			if not source_tifs:
-				print(f"WARNING: No source TIFs found in {sessions_to_run[i]}")
-				print(f"  Skipping TIFs→H5 step — registered.h5 left untouched.")
-			else:
-				for stale_h5 in ['unregistered.h5', 'registered.h5']:
-					stale_path = os.path.join(sessions_to_run[i], stale_h5)
-					if os.path.exists(stale_path):
-						os.remove(stale_path)
-						print(f"Deleted stale file: {stale_path}")
-				h5_name = os.path.join(sessions_to_run[i], 'unregistered.h5')
-				tif_stacks_to_h5(sessions_to_run[i], h5_name, frame_offset=False)
-
-		if process_selections[1, i]:
-			n_procs += 1
-			# Each pass must set its mode explicitly; NoRMCorre mutates this flag below.
-			mc_dict['pw_rigid'] = False
-			register_one_session(sessions_to_run[i], mc_dict, keep_memmap=False,
-				save_sample=True, sample_name=f"{n_procs:02}_rigid.tif")
-
-		if process_selections[2, i]:
-			# Prevent a prior non-rigid pass/folder from making this rigid pass expensive.
-			mc_dict['pw_rigid'] = False
-			register_one_session(sessions_to_run[i], mc_dict, keep_memmap=False,
-				save_sample=True, sample_name=f"{n_procs:02}_rigid.tif")
-			n_procs += 1
-
-		if process_selections[3, i]:
-			# NoRMCorre is the only pass that should use piecewise-rigid motion correction.
-			mc_dict['pw_rigid'] = True
-			register_one_session(sessions_to_run[i], mc_dict, keep_memmap=False,
-				save_sample=True, sample_name=f"{n_procs:02}_nonrigid.tif")
-			n_procs += 1
-
-		# TIFs→H5 leaves unregistered.h5; only motion steps produce registered.h5.
-		# If the user checked TIF conversion but none of the motion columns, FAST will
-		# have nothing to read — warn here so journalctl shows the real cause.
-		if process_selections[0, i] and not any(process_selections[1:4, i]):
-			unreg = os.path.join(sessions_to_run[i], 'unregistered.h5')
-			reg   = os.path.join(sessions_to_run[i], 'registered.h5')
-			if os.path.isfile(unreg) and not os.path.isfile(reg):
-				print(
-					"WARNING: TIFs→H5 wrote unregistered.h5 but no motion step was selected.\n"
-					"  Enable at least one of: First Rigid, Addl. Rigid, or NoRMCorre — "
-					"otherwise registered.h5 is never created and FAST will skip this folder."
-				)
+		row = [bool(process_selections[j, i]) for j in range(4)]
+		summaries.append(_register_one_folder(sessions_to_run[i], row, mc_dict))
+	return summaries
 
 
 if __name__ == '__main__':
@@ -365,7 +466,8 @@ if __name__ == '__main__':
 		print(f"Sessions queued: {len(workdirs)}")
 		print(f"skip_caiman: {skip_caiman}")
 		print(f"batch_id: {job['batch_id']}")
-		print(f"Batch log: {job['batch_log_path']}")
+		print(f"Summary log: {job['run_log_path']}")
+		print(f"Verbose log: {job['verbose_log_path']}")
 		schedule_job(persisted, scheduled_at)
 	else:
 		# Immediate run — legacy job JSON shape (no batch_id / batch_log_path required).

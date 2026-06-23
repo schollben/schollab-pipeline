@@ -316,13 +316,25 @@ Inside `fast/denoising.py`, `process_folder()` uses this order:
 - Removing `_fast_complete` allows FAST to run the folder again (resume behavior depends on checkpoint files).
 - To avoid accidental skips, keep at least one motion-correction column enabled in the GUI defaults.
 
+## Pipeline run logs
+
+Each pipeline run (immediate or scheduled) writes three files under **`log/`** at the repo root, sharing one timestamp from `run_id` (e.g. `20260528-143012`):
+
+| File | Contents |
+|------|----------|
+| `log/{ts}.log` | **Combined summary** — one block per data folder (CaImAn + FAST ops, artifacts, wall time, OVERALL line) |
+| `log/{ts}.verbose.log` | Full stdout/stderr tee (journal mirror) |
+| `log/{ts}.fast.log` | FAST step detail (memory stats, tracebacks) |
+
+`bash PreProcess2PImages.sh --status` tails the latest summary log. Standalone `python fast/denoising.py` (outside the worker) still defaults to `fast/logs/_pipeline_log_*.txt`.
+
 ## Scheduled batch runs
 
-Optional feature — **Run** in the GUI behaves exactly as before (immediate systemd launch, same job JSON shape). Scheduling adds batch metadata and a consolidated log.
+Optional feature — **Run** in the GUI behaves exactly as before (immediate systemd launch). Scheduling adds batch metadata and the same `log/` files as immediate runs.
 
-Queue multiple folders (with per-folder CaImAn step checkboxes) to run **sequentially** starting at a chosen time. Each **scheduled** batch gets one consolidated log at `{fast_dir}/logs/batch_{batch_id}.log`.
+Queue multiple folders (with per-folder CaImAn step checkboxes) to run **sequentially** starting at a chosen time.
 
-Immediate runs and hand-written job files only need the original keys (`sessions`, `process_selections`, `skip_caiman`, `run_id`, `unit_name`). Batch fields are optional.
+Immediate runs and hand-written job files need `sessions`, `process_selections`, `skip_caiman`, `run_id`, `unit_name`. Log paths are added automatically at launch if omitted.
 
 ### GUI
 
@@ -380,7 +392,10 @@ The GUI produces a job file at `/tmp/pipeline_job.json`.
   "skip_caiman": false,
   "run_id": "20250618143000",
   "unit_name": "schollab-PreProcess2PImages-20250618143000",
-  "batch_log_path": "/home/user/Documents/FAST/logs/batch_20260619-020000-a1b2.log",
+  "run_log_path": "/path/to/schollab-pipeline/log/20250618-143000.log",
+  "verbose_log_path": "/path/to/schollab-pipeline/log/20250618-143000.verbose.log",
+  "fast_log_path": "/path/to/schollab-pipeline/log/20250618-143000.fast.log",
+  "batch_log_path": "/path/to/schollab-pipeline/log/20250618-143000.verbose.log",
   "scheduled_at": "2026-06-19T02:00:00"
 }
 ```

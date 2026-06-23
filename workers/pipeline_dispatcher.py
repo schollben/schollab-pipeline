@@ -73,7 +73,10 @@ def main():
 
 	batch_id = job.get('batch_id', 'unknown')
 	unit_name = job.get('unit_name', f'scheduled-{batch_id}')
-	batch_log = job.get('batch_log_path') or os.environ.get('SCHOLLAB_BATCH_LOG')
+	verbose_log = (
+		job.get('verbose_log_path') or job.get('batch_log_path')
+		or os.environ.get('SCHOLLAB_BATCH_LOG')
+	)
 
 	if not try_acquire_batch_lock(batch_id, unit_name, os.getpid()):
 		defer_scheduled_job(job_path, defer_minutes=DEFER_MINUTES)
@@ -85,15 +88,19 @@ def main():
 			f.write(unit_name)
 
 		env = os.environ.copy()
-		if batch_log:
-			os.makedirs(os.path.dirname(batch_log), exist_ok=True)
-			_log_batch_header(job_path, batch_log)
-			env['SCHOLLAB_BATCH_LOG'] = batch_log
+		if verbose_log:
+			os.makedirs(os.path.dirname(verbose_log), exist_ok=True)
+			_log_batch_header(job_path, verbose_log)
+			env['SCHOLLAB_BATCH_LOG'] = verbose_log
+		if job.get('fast_log_path'):
+			env['SCHOLLAB_FAST_LOG'] = job['fast_log_path']
 
 		print(f"pipeline_dispatcher: starting batch {batch_id}")
 		print(f"  job: {job_path}")
-		if batch_log:
-			print(f"  batch log: {batch_log}")
+		if job.get('run_log_path'):
+			print(f"  summary log: {job['run_log_path']}")
+		if verbose_log:
+			print(f"  verbose log: {verbose_log}")
 
 		result = subprocess.run(
 			[CAIMAN_PYTHON, WORKER_SCRIPT, job_path],
@@ -101,8 +108,8 @@ def main():
 			check=False,
 		)
 		exit_code = result.returncode
-		if batch_log:
-			_log_batch_footer(batch_log, exit_code)
+		if verbose_log:
+			_log_batch_footer(verbose_log, exit_code)
 	finally:
 		release_batch_lock()
 

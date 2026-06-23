@@ -111,24 +111,25 @@ class TestBatchJobValidation(unittest.TestCase):
 		bid = make_batch_id('2026-06-19T02:00:00')
 		self.assertTrue(bid.startswith('20260619-020000-'))
 
-	def test_build_job_includes_batch_log(self):
+	def test_build_job_includes_log_paths(self):
 		import numpy as np
-		with tempfile.TemporaryDirectory() as tmp:
-			job = build_scheduled_job(
-				np.array(['/data/a']),
-				np.array([[True], [True], [False], [False]]),
-				False,
-				'2026-06-19T02:00:00',
-				fast_dir=tmp,
-			)
-			self.assertIn('batch_id', job)
-			self.assertIn('batch_log_path', job)
-			self.assertIn('scheduled_at', job)
-			self.assertTrue(job['batch_log_path'].startswith(tmp))
-			self.assertTrue(job['batch_log_path'].endswith('.log'))
+		job = build_scheduled_job(
+			np.array(['/data/a']),
+			np.array([[True], [True], [False], [False]]),
+			False,
+			'2026-06-19T02:00:00',
+		)
+		self.assertIn('batch_id', job)
+		self.assertIn('run_log_path', job)
+		self.assertIn('verbose_log_path', job)
+		self.assertIn('fast_log_path', job)
+		self.assertIn('batch_log_path', job)
+		self.assertIn('scheduled_at', job)
+		self.assertTrue(job['run_log_path'].endswith('.log'))
+		self.assertTrue(job['verbose_log_path'].endswith('.verbose.log'))
 
-	def test_build_immediate_job_legacy_shape(self):
-		"""Immediate GUI/CLI jobs match pre-scheduling JSON (no batch fields)."""
+	def test_build_immediate_job_has_log_paths(self):
+		"""Immediate jobs include repo log paths."""
 		import numpy as np
 		job = build_immediate_job(
 			np.array(['/data/a', '/data/b']),
@@ -138,8 +139,8 @@ class TestBatchJobValidation(unittest.TestCase):
 		validate_job(job)
 		self.assertIn('run_id', job)
 		self.assertIn('unit_name', job)
+		self.assertIn('run_log_path', job)
 		self.assertNotIn('batch_id', job)
-		self.assertNotIn('batch_log_path', job)
 		self.assertNotIn('scheduled_at', job)
 
 	def test_batch_log_path_creates_logs_dir(self):

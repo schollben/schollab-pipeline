@@ -23,6 +23,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_NAME="schollab-PreProcess2PImages"
+PIPELINE_LOG_DIR="$REPO_DIR/log"
 FAST_LOG_DIR="$REPO_DIR/fast/logs"
 FAST_CONFIG="$REPO_DIR/fast/config.json"
 FAST_CONFIG_LEGACY="$REPO_DIR/fast/pipeline_config.json"
@@ -511,6 +512,7 @@ _setup_run() {
 	loginctl enable-linger "$USER"
 	echo ""
 	mkdir -p "$FAST_LOG_DIR"
+	mkdir -p "$PIPELINE_LOG_DIR"
 	echo "── FAST scratch tmpfs ─────────────────────────────────"
 	_ensure_scratch_tmpfs
 	echo ""
@@ -650,7 +652,15 @@ if [ "$MODE" = "status" ]; then
 	_show_run_timing
 	echo "── Scheduled batches ────────────────────────────────"
 	_show_scheduled_batches
-	echo "── Last 20 FAST log lines ───────────────────────────"
+	echo "── Last combined run log (summary) ─────────────────"
+	LATEST_SUMMARY="$(ls -t "$PIPELINE_LOG_DIR"/*.log 2>/dev/null | grep -v '\.verbose\.log$' | grep -v '\.fast\.log$' | head -1)"
+	if [ -n "$LATEST_SUMMARY" ]; then
+		echo "  file: $LATEST_SUMMARY"
+		tail -20 "$LATEST_SUMMARY"
+	else
+		echo "No pipeline summary log in $PIPELINE_LOG_DIR"
+	fi
+	echo "── Last FAST detail log (standalone or legacy) ─────"
 	tail -20 "$(ls -t "$FAST_LOG_DIR"/_pipeline_log_*.txt 2>/dev/null | head -1)" 2>/dev/null \
 		|| echo "No FAST log file found"
 	exit 0
@@ -662,7 +672,6 @@ if [ "$MODE" = "attach" ]; then
 	ACTIVE_UNIT="$(_active_unit)"
 	echo "Following pipeline output — Ctrl+C to detach (pipeline keeps running)"
 	echo "  unit: $ACTIVE_UNIT"
-	echo "  tip: systemd 'Consumed CPU time' at exit is core-seconds (not wall clock)."
 	echo ""
 	journalctl --user -f -u "$ACTIVE_UNIT" || true
 	echo ""
@@ -699,6 +708,7 @@ fi
 loginctl enable-linger "$USER"
 
 mkdir -p "$FAST_LOG_DIR"
+mkdir -p "$PIPELINE_LOG_DIR"
 
 # FAST scratch tmpfs — disabled: use disk-backed scratch_dir in fast/config.json.
 # _ensure_scratch_tmpfs

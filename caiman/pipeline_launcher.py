@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from pipeline_job import (
-	batch_log_path,
+	attach_log_paths,
 	make_batch_id,
 	persist_job,
 	resolve_fast_dir,
@@ -94,6 +94,7 @@ def build_immediate_job(workdirs, proc_opts, skip_caiman):
 		'run_id': run_id,
 		'unit_name': unit_name_for_run(run_id),
 	}
+	attach_log_paths(job, REPO_DIR)
 	validate_job(job)
 	return job
 
@@ -102,7 +103,6 @@ def build_scheduled_job(workdirs, proc_opts, skip_caiman, scheduled_at, fast_dir
 	"""Build a scheduled batch job with batch_id, log path, and scheduled_at."""
 	run_id = datetime.now().strftime('%Y%m%d%H%M%S')
 	batch_id = make_batch_id(scheduled_at)
-	fast_dir = fast_dir or resolve_fast_dir()
 	job = {
 		'batch_id': batch_id,
 		'run_id': run_id,
@@ -110,9 +110,9 @@ def build_scheduled_job(workdirs, proc_opts, skip_caiman, scheduled_at, fast_dir
 		'sessions': workdirs.tolist() if hasattr(workdirs, 'tolist') else list(workdirs),
 		'process_selections': proc_opts.tolist() if hasattr(proc_opts, 'tolist') else proc_opts,
 		'skip_caiman': bool(skip_caiman),
-		'batch_log_path': batch_log_path(fast_dir, batch_id),
 		'scheduled_at': scheduled_at,
 	}
+	attach_log_paths(job, REPO_DIR)
 	validate_job(job)
 	return job
 
@@ -190,6 +190,18 @@ def _systemctl_user(*args, check=True):
 	return subprocess.run(['systemctl', '--user', *args], check=check)
 
 
+def _worker_log_env_args(job):
+	"""Pass repo log paths into transient systemd worker."""
+	args = []
+	verbose = job.get('verbose_log_path') or job.get('batch_log_path')
+	fast_log = job.get('fast_log_path')
+	if verbose:
+		args.append(f"--setenv=SCHOLLAB_BATCH_LOG={verbose}")
+	if fast_log:
+		args.append(f"--setenv=SCHOLLAB_FAST_LOG={fast_log}")
+	return args
+
+
 def launch_job_now(job_path):
 	"""Launch pipeline_worker immediately as a transient systemd service."""
 	with open(job_path, encoding='utf-8') as f:
@@ -200,24 +212,27 @@ def launch_job_now(job_path):
 	unit_name = job.get('unit_name') or unit_name_for_run(run_id)
 	job['run_id'] = run_id
 	job['unit_name'] = unit_name
+	attach_log_paths(job, REPO_DIR)
 	write_job(job, job_path)
 	Path(ACTIVE_UNIT_PATH).write_text(unit_name, encoding='utf-8')
 
-	subprocess.run(['systemctl', '--user', 'reset-failed', UNIT_NAME], check=False)
+	# Each run uses a unique unit name — no need to reset-failed on the legacy
+	# fixed name schollab-PreProcess2PImages.service (often not loaded → noisy error).
 
 	cmd = _systemd_run_base_env()
 	cmd.extend([
 		f'--unit={unit_name}',
 		'--description=Schollab caiman+FAST pipeline',
 	])
-	if job.get('batch_log_path'):
-		cmd.append(f"--setenv=SCHOLLAB_BATCH_LOG={job['batch_log_path']}")
+	cmd.extend(_worker_log_env_args(job))
 	cmd.extend([CAIMAN_PYTHON, WORKER_SCRIPT, job_path])
 	subprocess.run(cmd, check=True)
 	print(f"Pipeline launched as systemd service '{unit_name}'.")
 	print(f"Monitor: journalctl --user -f -u {unit_name}")
-	if job.get('batch_log_path'):
-		print(f"Batch log: {job['batch_log_path']}")
+	if job.get('run_log_path'):
+		print(f"Summary log: {job['run_log_path']}")
+	if job.get('verbose_log_path'):
+		print(f"Verbose log: {job['verbose_log_path']}")
 	return unit_name
 
 
@@ -228,8 +243,7 @@ def schedule_job(job_path, scheduled_at):
 	job['scheduled_at'] = scheduled_at
 	if not job.get('batch_id'):
 		job['batch_id'] = make_batch_id(scheduled_at)
-	if not job.get('batch_log_path'):
-		job['batch_log_path'] = batch_log_path(resolve_fast_dir(), job['batch_id'])
+	attach_log_paths(job, REPO_DIR)
 	validate_job(job)
 
 	persisted = persist_batch_job(job)
@@ -246,7 +260,8 @@ def schedule_job(job_path, scheduled_at):
 	print(f"  Start time:   {scheduled_at}")
 	print(f"  Job file:     {persisted}")
 	print(f"  Timer unit:   {timer_name}")
-	print(f"  Batch log:    {job['batch_log_path']}")
+	print(f"  Summary log:  {job['run_log_path']}")
+	print(f"  Verbose log:  {job['verbose_log_path']}")
 	print(f"  List timers:  systemctl --user list-timers '{BATCH_TIMER_PREFIX}-*'")
 	return job['batch_id'], timer_name
 
@@ -305,7 +320,8 @@ def print_scheduled_batches():
 		print(f"  scheduled_at: {job.get('scheduled_at', '(immediate)')}")
 		print(f"  folders:      {len(job.get('sessions', []))}")
 		print(f"  job file:     {job.get('_job_path', '')}")
-		print(f"  batch log:    {job.get('batch_log_path', '')}")
+		print(f"  summary log:  {job.get('run_log_path', '')}")
+		print(f"  verbose log:  {job.get('verbose_log_path', job.get('batch_log_path', ''))}")
 		_, timer_name = _batch_unit_names(job.get('batch_id', ''))
 		active = subprocess.run(
 			['systemctl', '--user', 'is-active', timer_name],

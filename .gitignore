@@ -17,6 +17,7 @@ env/
 caiman_temp/
 
 # FAST pipeline outputs (live on server, not in repo)
+log/
 fast/logs/
 fast/data/train/*.tif
 fast/data/train/*.tiff

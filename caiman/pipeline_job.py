@@ -103,9 +103,28 @@ def scheduled_jobs_dir(fast_dir=None):
 
 
 def batch_log_path(fast_dir, batch_id):
+	"""
+	Legacy FAST_DIR batch log path — prefer log_paths_for_run / attach_log_paths.
+
+	Kept for tests and old scheduled job JSON on disk.
+	"""
 	logs = os.path.join(fast_dir or resolve_fast_dir(), 'logs')
 	os.makedirs(logs, exist_ok=True)
 	return os.path.join(logs, f'batch_{batch_id}.log')
+
+
+def log_paths_for_run(repo_dir=None, run_id=None):
+	"""Repo-level log paths for one pipeline run (summary, verbose, FAST detail)."""
+	from pipeline_run_log import log_paths_for_run as _paths
+	repo = repo_dir or _repo_root()
+	rid = run_id or datetime.now().strftime('%Y%m%d%H%M%S')
+	return _paths(repo, rid)
+
+
+def attach_log_paths(job, repo_dir=None):
+	"""Add run_log_path, verbose_log_path, fast_log_path; alias batch_log_path."""
+	from pipeline_run_log import attach_log_paths as _attach
+	return _attach(job, repo_dir or _repo_root())
 
 
 def validate_job(job):
