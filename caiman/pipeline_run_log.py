@@ -21,18 +21,18 @@ def format_run_id_ts(run_id):
 
 def log_paths_for_run(repo_dir, run_id):
 	"""
-	Paths for one pipeline run under repo log/ (not FAST install dir).
+	Paths for one pipeline run under repo log/{timestamp}/ (not FAST install dir).
 
-	Returns summary, verbose tee, and FAST step-detail paths sharing one timestamp.
+	Each run gets its own subdirectory; summary, verbose, and FAST logs live together.
 	"""
 	ts = format_run_id_ts(run_id)
-	log_dir = os.path.join(repo_dir, 'log')
-	os.makedirs(log_dir, exist_ok=True)
-	base = os.path.join(log_dir, ts)
+	run_dir = os.path.join(repo_dir, 'log', ts)
+	os.makedirs(run_dir, exist_ok=True)
 	return {
-		'run_log_path': f'{base}.log',
-		'verbose_log_path': f'{base}.verbose.log',
-		'fast_log_path': f'{base}.fast.log',
+		'run_log_dir': run_dir,
+		'run_log_path': os.path.join(run_dir, 'summary.log'),
+		'verbose_log_path': os.path.join(run_dir, 'verbose.log'),
+		'fast_log_path': os.path.join(run_dir, 'fast.log'),
 	}
 
 
@@ -168,19 +168,21 @@ def append_folder_block(
 	_append_lines(path, lines)
 
 
-def write_run_footer(path, *, run_log_path, wall_s, folder_outcomes):
+def write_run_footer(path, *, run_log_path, wall_s, folder_outcomes, run_log_dir=None):
 	"""Run-level footer with aggregate folder counts."""
 	finished = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 	ok = sum(1 for o in folder_outcomes if o == 'complete')
 	caiman_fail = sum(1 for o in folder_outcomes if o == 'caiman_failed')
 	fast_fail = sum(1 for o in folder_outcomes if o == 'fast_failed')
 	incomplete = len(folder_outcomes) - ok - caiman_fail - fast_fail
+	log_dir = run_log_dir or os.path.dirname(run_log_path)
 	lines = [
 		'#' * 80,
 		f'Pipeline run complete  |  finished {finished}',
 		f'Wall time: {_format_duration(wall_s)}  |  folders: {ok} ok, '
 		f'{caiman_fail} caiman-failed, {fast_fail} fast-failed, {incomplete} other',
-		f'Log: {run_log_path}',
+		f'Log dir: {log_dir}',
+		f'Summary: {run_log_path}',
 		'#' * 80,
 		'',
 	]

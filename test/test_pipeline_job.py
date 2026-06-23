@@ -120,13 +120,14 @@ class TestBatchJobValidation(unittest.TestCase):
 			'2026-06-19T02:00:00',
 		)
 		self.assertIn('batch_id', job)
+		self.assertIn('run_log_dir', job)
 		self.assertIn('run_log_path', job)
 		self.assertIn('verbose_log_path', job)
 		self.assertIn('fast_log_path', job)
 		self.assertIn('batch_log_path', job)
 		self.assertIn('scheduled_at', job)
-		self.assertTrue(job['run_log_path'].endswith('.log'))
-		self.assertTrue(job['verbose_log_path'].endswith('.verbose.log'))
+		self.assertTrue(job['run_log_path'].endswith('/summary.log'))
+		self.assertTrue(job['verbose_log_path'].endswith('/verbose.log'))
 
 	def test_build_immediate_job_has_log_paths(self):
 		"""Immediate jobs include repo log paths."""

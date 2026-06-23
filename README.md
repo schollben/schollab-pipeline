@@ -318,13 +318,20 @@ Inside `fast/denoising.py`, `process_folder()` uses this order:
 
 ## Pipeline run logs
 
-Each pipeline run (immediate or scheduled) writes three files under **`log/`** at the repo root, sharing one timestamp from `run_id` (e.g. `20260528-143012`):
+Each pipeline run (immediate or scheduled) writes a timestamped directory under **`log/`** at the repo root:
+
+```
+log/20260528-143012/
+  summary.log   ← combined per-folder digest (CaImAn + FAST, OVERALL lines)
+  verbose.log   ← full stdout/stderr tee
+  fast.log      ← FAST step detail (memory, tracebacks)
+```
 
 | File | Contents |
 |------|----------|
-| `log/{ts}.log` | **Combined summary** — one block per data folder (CaImAn + FAST ops, artifacts, wall time, OVERALL line) |
-| `log/{ts}.verbose.log` | Full stdout/stderr tee (journal mirror) |
-| `log/{ts}.fast.log` | FAST step detail (memory stats, tracebacks) |
+| `log/{ts}/summary.log` | **Combined summary** — one block per data folder |
+| `log/{ts}/verbose.log` | Full stdout/stderr tee (journal mirror) |
+| `log/{ts}/fast.log` | FAST step detail (memory stats, tracebacks) |
 
 `bash PreProcess2PImages.sh --status` tails the latest summary log. Standalone `python fast/denoising.py` (outside the worker) still defaults to `fast/logs/_pipeline_log_*.txt`.
 
@@ -392,10 +399,11 @@ The GUI produces a job file at `/tmp/pipeline_job.json`.
   "skip_caiman": false,
   "run_id": "20250618143000",
   "unit_name": "schollab-PreProcess2PImages-20250618143000",
-  "run_log_path": "/path/to/schollab-pipeline/log/20250618-143000.log",
-  "verbose_log_path": "/path/to/schollab-pipeline/log/20250618-143000.verbose.log",
-  "fast_log_path": "/path/to/schollab-pipeline/log/20250618-143000.fast.log",
-  "batch_log_path": "/path/to/schollab-pipeline/log/20250618-143000.verbose.log",
+  "run_log_dir": "/path/to/schollab-pipeline/log/20250618-143000",
+  "run_log_path": "/path/to/schollab-pipeline/log/20250618-143000/summary.log",
+  "verbose_log_path": "/path/to/schollab-pipeline/log/20250618-143000/verbose.log",
+  "fast_log_path": "/path/to/schollab-pipeline/log/20250618-143000/fast.log",
+  "batch_log_path": "/path/to/schollab-pipeline/log/20250618-143000/verbose.log",
   "scheduled_at": "2026-06-19T02:00:00"
 }
 ```
