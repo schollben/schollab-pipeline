@@ -816,8 +816,8 @@ def process_folder(
 
 def main():
 
-	# Force synchronous CUDA execution so errors produce tracebacks instead of silent death
-    os.environ.setdefault('CUDA_LAUNCH_BLOCKING', '1')
+	# # Force synchronous CUDA execution so errors produce tracebacks instead of silent death
+    # os.environ.setdefault('CUDA_LAUNCH_BLOCKING', '1')
 
 	# Accept optional --config argument so different config files can be used
 	# without modifying this script: python denoising.py --config my_config.json

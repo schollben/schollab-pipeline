@@ -1,7 +1,7 @@
 import glob
 import os
 import logging
-
+import gc
 import numpy as np
 import torch
 from models.Unet_Lite import Unet_Lite
@@ -85,7 +85,7 @@ def goTesting(args):
             mean = torch.mean(input_tensor)
             input_tensor = input_tensor - mean
             input_tensor = input_tensor[0].cuda(args.local_rank, non_blocking=True)
-            output = torch.zeros(input_tensor.shape)
+            output = torch.zeros(input_tensor.shape, dtype=torch.float16)
 
             miniBatch = args.miniBatch_size
             timeFrame = input_tensor.shape[1]
@@ -102,7 +102,7 @@ def goTesting(args):
                         output[:, j:j + output_channels - 1, ...] = 0.5 * (output_p[:, :-1, ...] + output[:, j:j + output_channels - 1, ...])
 
             output = output[:, :t, ...] + mean
-            output_image = np.squeeze(output.numpy()) * 1.0
+            output_image = np.squeeze(output.float().numpy()) * 1.0
             del input_tensor, output  # free GPU/CPU memory
 
             # Keep source chunk name so Step 4 merge can sort by trailing index.
@@ -110,6 +110,8 @@ def goTesting(args):
             output_image = np.clip(output_image, 0, 65535)
             io.imsave(result_name, output_image.astype(np.uint16), check_contrast=False)
             del output_image
+            del input_tensor, output
+            gc.collect()  # ← add this, gc is not imported yet
 
             torch.cuda.empty_cache()
 

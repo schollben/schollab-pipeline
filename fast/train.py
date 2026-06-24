@@ -11,7 +11,7 @@ import datetime
 from skimage import io
 from datasets.data_process import generate_subimages, sampler
 from utils.config import args2json
-
+import gc
 
 def goTraining(args):
     # Set random seed for reproducibility
