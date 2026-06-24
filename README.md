@@ -240,7 +240,7 @@ If a folder has **`registered.h5`** but **no acquisition TIFs** (previews exclud
 
 The registration GUI pre-checks **TIFs→.H5** and **First Rigid** by default for each folder so motion correction runs and `registered.h5` exists for FAST if you leave defaults; adjust the columns per folder as needed.
 
-**Skip CaImAn (FAST only):** check this box at the top of the GUI to grey out all CaImAn columns and run denoising only. Each folder must already have `registered.h5`. Remove `_fast_complete` to force a FAST re-run. The GUI warns if any selected folder lacks `registered.h5`.
+**Skip CaImAn (FAST only):** check this box at the top of the GUI to grey out all CaImAn columns and run denoising only. Each folder must already have `registered.h5`. Remove `_fast_complete` to force a FAST re-run (`scratch/` and `checkpoint/` are cleaned automatically unless `skip_training` keeps the checkpoint). The GUI warns if any selected folder lacks `registered.h5`.
 
 ```bash
 bash PreProcess2PImages.sh --setup                 # conda envs + linger + log dirs (new machine)
@@ -291,14 +291,13 @@ After CaImAn finishes a folder, the worker checks for `registered.h5`.
 Inside `fast/denoising.py`, `process_folder()` uses this order:
 
 1. **`_fast_complete` exists:** folder is considered fully complete, FAST skips entirely (`SKIPPING (complete)`).
-2. **Checkpoint config exists:** FAST skips Steps 1-2 (TIFF export + training) and resumes from inference.
-3. **Checkpoint exists but `registered/` TIFF folder is missing or empty:** FAST re-runs Step 1 only, then continues with inference/export.
-4. **No checkpoint:** FAST runs full pipeline.
+2. **Otherwise:** existing `scratch/` is always deleted; `checkpoint/` is deleted unless `skip_training: true` in `fast/config.json`. Then Steps 1–5 run, or Steps 1–2 are skipped when `skip_training` reuses a kept checkpoint.
 
 ### Practical meaning
 
 - `_fast_complete` is the final success sentinel; if present, reruns are intentionally skipped.
-- Removing `_fast_complete` allows FAST to run the folder again (resume behavior depends on checkpoint files).
+- Removing `_fast_complete` re-runs FAST with a **clean slate** (`scratch/` removed; `checkpoint/` removed unless `skip_training`).
+- Set `"skip_training": true` only when you deliberately want to reuse an existing checkpoint without re-training.
 - To avoid accidental skips, keep at least one motion-correction column enabled in the GUI defaults.
 
 ## Pipeline run logs

@@ -165,7 +165,7 @@ class PipelineConfig:
 # Path management
 # =============================================================================
 
-from folder_paths import FolderPaths
+from folder_paths import FolderPaths, remove_checkpoint_for_rerun, remove_scratch_for_rerun
 
 def setup_logging(log_path: str, batch_log_path: Optional[str] = None, file_mode: str = 'w') -> logging.Logger:
 	"""
@@ -607,8 +607,7 @@ def _remove_folder_scratch(paths: FolderPaths, logger: logging.Logger):
 	Why: scratch holds only FAST intermediates; permanent outputs live on root.
 	Called from process_folder finally so failures still clean up.
 	"""
-	if os.path.isdir(paths.scratch):
-		shutil.rmtree(paths.scratch)
+	if remove_scratch_for_rerun(paths.scratch):
 		logger.info(f"  Removed scratch: {paths.scratch}")
 
 
@@ -671,13 +670,12 @@ def process_folder(
 	Orchestrate the full FAST pipeline for a single data folder.
 
 	Auto-skip / resume logic (checked in order):
-	  1. _fast_complete exists         → fully done, skip entirely
-	  2. checkpoint config.json exists → skip Steps 1 & 2, resume from inference
-	  3. checkpoint exists but registered/ missing → re-run Step 1 only, skip Step 2
-	  4. No checkpoint                 → run full pipeline (Steps 1–5)
+	  1. _fast_complete exists → fully done, skip entirely
+	  2. Otherwise run FAST: delete scratch/ and checkpoint/ (unless skip_training
+	     for checkpoint) so each re-run starts clean; then Steps 1–5 or skip
+	     1–2 when skip_training reuses an existing checkpoint
 
-	A crashed run can always be safely restarted — completed work is preserved
-	and partial intermediate files are cleaned up automatically.
+	Scratch is removed at run start and again in finally after each attempt.
 	"""
 	paths = FolderPaths.from_root(dataFolder)
 	recorder = recorder or StepRecorder()
@@ -711,6 +709,11 @@ def process_folder(
 	logger.info(f"\n{'='*60}")
 	logger.info(f"Processing: {dataFolder}")
 	logger.info(f"{'='*60}")
+
+	if remove_checkpoint_for_rerun(paths.checkpoint, cfg.skip_training):
+		logger.info(f"  Removed existing checkpoint/ for fresh training: {paths.checkpoint}")
+	if remove_scratch_for_rerun(paths.scratch):
+		logger.info(f"  Removed existing scratch/ for clean re-run: {paths.scratch}")
 
 	ran_fast = False
 	try:

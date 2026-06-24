@@ -49,7 +49,7 @@ class CheckListFrame(wx.Frame):
         mode_sizer.Add(
             wx.StaticText(
                 mode_panel,
-                label='Requires registered.h5 in each folder. Remove _fast_complete to re-run FAST.'
+                label='Requires registered.h5 in each folder. Remove _fast_complete to re-run FAST (fresh training).'
             ),
             flag=wx.LEFT | wx.RIGHT | wx.BOTTOM,
             border=5
