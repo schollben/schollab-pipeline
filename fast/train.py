@@ -49,7 +49,7 @@ def goTraining(args):
                             multiprocessing_context='spawn')
 
     # Define checkpoint directory in the dataset folder (parent of train_folder)
-    # Use results_dir so checkpoint lands on the permanent drive, not tmpfs scratch
+    # Use results_dir so checkpoint lands on the session root, not scratch/
     data_root = getattr(args, 'results_dir', None) or os.path.dirname(os.path.normpath(args.train_folder))
     checkpoint_dir = os.path.join(data_root, 'checkpoint',
                                   datetime.datetime.now().strftime("%Y%m%d%H%M"))

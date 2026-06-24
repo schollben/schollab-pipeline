@@ -89,7 +89,7 @@ def _caiman_thread_setenv_args():
 def _fast_path_setenv_args():
 	"""Keep FAST path overrides visible after systemd detaches the worker."""
 	args = []
-	for key in ('FAST_DIR', 'FAST_SCRATCH_DIR'):
+	for key in ('FAST_DIR',):
 		if key in os.environ:
 			args.append(f"--setenv={key}={os.environ[key]}")
 	return args

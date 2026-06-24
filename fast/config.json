@@ -1,6 +1,5 @@
 {
     "fast_dir": "$HOME/Documents/FAST/",
-    "scratch_dir": "$HOME/Documents/scratch/",
     "skip_training": false,
     "train_frames": 4000,
     "tiff_chunk_size": 4000,

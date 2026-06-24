@@ -16,15 +16,15 @@
 #     - config.json present in the same directory as this script
 #     - train.py must use args.results_dir (not train_folder parent) for checkpoint dir
 #     - This script should be run with the FAST environment activated
-#     - Intermediate files go to SCRATCH_DIR (tmpfs) to avoid exFAT I/O stress
+#     - Intermediate files go to {session}/scratch/ (removed after each run)
 #     - To watch GPU: 'watch -n 2 nvidia-smi'
 
 # WORKFLOW:
-#     1. Convert registered.h5 to TIFF stacks → tmpfs scratch
-#     2. Train deep learning model on selected frames → checkpoint on permanent drive
-#     3. Run inference on all registered TIFFs → result TIFFs on tmpfs scratch
-#     4. Convert denoised result TIFFs → inference.h5 on permanent drive
-#     5. Copy example TIFF, delete tmpfs scratch, write completion sentinel
+#     1. Convert registered.h5 to TIFF stacks → session/scratch/registered/
+#     2. Train deep learning model on selected frames → checkpoint on session root
+#     3. Run inference on all registered TIFFs → session/scratch/result/
+#     4. Convert denoised result TIFFs → inference.h5 on session root
+#     5. Copy example TIFF, delete session/scratch/, write completion sentinel
 
 # INPUT:
 #     - config.json: data folders, hyperparameters, paths
@@ -108,7 +108,7 @@ def load_pipeline_config(path: str) -> dict:
 	with open(path) as f:
 		cfg = json.load(f)
 	required = [
-		'fast_dir', 'scratch_dir', 'skip_training', 'train_frames', 'tiff_chunk_size',
+		'fast_dir', 'skip_training', 'train_frames', 'tiff_chunk_size',
 		'h5_write_batch_frames', 'minibatch_size', 'batch_size', 'num_workers', 'epochs', 'data_folders'
 	]
 	missing = [k for k in required if k not in cfg]
@@ -132,7 +132,6 @@ class PipelineConfig:
 	type clarity, and a single place to add defaults or validation.
 	"""
 	fast_dir:         str
-	scratch_dir:      str   # tmpfs mount — intermediate files live here, not on exFAT
 	skip_training:    bool
 	train_frames:     int
 	tiff_chunk_size:  int
@@ -148,12 +147,8 @@ class PipelineConfig:
 		fast_dir = resolve_config_path(
 			cfg.get('fast_dir'), 'FAST_DIR', os.path.join('~', 'Documents', 'FAST')
 		)
-		scratch_dir = resolve_config_path(
-			cfg.get('scratch_dir'), 'FAST_SCRATCH_DIR', os.path.join('~', 'Documents', 'scratch')
-		)
 		return PipelineConfig(
 			fast_dir         = fast_dir,
-			scratch_dir      = scratch_dir,
 			skip_training    = cfg['skip_training'],
 			train_frames     = cfg['train_frames'],
 			tiff_chunk_size  = cfg['tiff_chunk_size'],
@@ -170,47 +165,7 @@ class PipelineConfig:
 # Path management
 # =============================================================================
 
-@dataclass
-class FolderPaths:
-	"""
-	All filesystem paths for a single data folder.
-
-	Centralising paths here avoids threading 7+ string args through every
-	step function. Permanent outputs (checkpoint, inference.h5, sentinel)
-	go to root on the permanent drive. Intermediate files (registered,
-	training, result) go to scratch on tmpfs to avoid exFAT I/O stress.
-	"""
-	root:         str
-	scratch:      str  # tmpfs base dir for this folder's intermediate files
-	h5:           str  # registered.h5  — input, never modified
-	registered:   str  # registered/    — TIFF chunks exported from h5 (tmpfs)
-	training:     str  # training/      — first TIFF chunk for training (tmpfs)
-	result:       str  # result/        — inference output TIFFs (tmpfs)
-	checkpoint:   str  # checkpoint/    — model weights, permanent drive
-	inference_h5: str  # inference.h5   — final denoised output, permanent drive
-	sentinel:     str  # _fast_complete — written only after full completion
-
-	@staticmethod
-	def from_root(root: str, scratch_dir: str) -> 'FolderPaths':
-		"""Build FolderPaths from session root and tmpfs scratch directory."""
-		folder_id = os.path.basename(root.rstrip('/'))
-		scratch   = os.path.join(scratch_dir, folder_id)
-		return FolderPaths(
-			root         = root,
-			scratch      = scratch,
-			h5           = os.path.join(root,    'registered.h5'),
-			registered   = os.path.join(scratch, 'registered'),
-			training     = os.path.join(scratch, 'training'),
-			result       = os.path.join(scratch, 'result'),
-			checkpoint   = os.path.join(root,    'checkpoint'),
-			inference_h5 = os.path.join(root,    'inference.h5'),
-			sentinel     = os.path.join(root,    '_fast_complete'),
-		)
-
-
-# =============================================================================
-# Logging
-# =============================================================================
+from folder_paths import FolderPaths
 
 def setup_logging(log_path: str, batch_log_path: Optional[str] = None, file_mode: str = 'w') -> logging.Logger:
 	"""
@@ -260,7 +215,7 @@ def log_startup_info(logger: logging.Logger, log_path: str, cfg: PipelineConfig)
 		f"Config: EPOCHS={cfg.epochs} TRAIN_FRAMES={cfg.train_frames} "
 		f"TIFF_CHUNK_SIZE={cfg.tiff_chunk_size} H5_WRITE_BATCH={cfg.h5_write_batch_frames} "
 		f"MINIBATCH={cfg.minibatch_size} WORKERS={cfg.num_workers} "
-		f"SKIP_TRAINING={cfg.skip_training} SCRATCH={cfg.scratch_dir}"
+		f"SKIP_TRAINING={cfg.skip_training} SCRATCH=<each data_folder>/scratch"
 	)
 	logger.info(
 		f"GPU: {torch.cuda.get_device_name(0)}  |  "
@@ -439,7 +394,7 @@ def step1_export_tiffs(
 	Convert registered.h5 to TIFF chunks and copy first chunk to training/.
 
 	Always clears registered/ and training/ first — registered.h5 is the
-	source of truth. Both dirs go to tmpfs scratch to avoid exFAT I/O.
+	source of truth. Both dirs live under session/scratch/ for FAST intermediates.
 	Only the first chunk is copied to training/ since self-supervised
 	training needs only a representative sample of the recording.
 	"""
@@ -545,7 +500,7 @@ def step3_inference(
 				f"  (from config: {checkpoint_config})"
 			)
 
-		# Point results_dir at tmpfs scratch so goTesting writes to RAM not exFAT
+		# goTesting writes result TIFFs under session/scratch/ (not the session root).
 		test_params['results_dir'] = paths.scratch
 		# Write a temporary copy so the permanent checkpoint config is not mutated
 		tmp_config = os.path.join(paths.root, '_inference_config.json')
@@ -645,6 +600,18 @@ def step4_export_h5(
 		step_detail.set(f'inference.h5 ({size_gb:.2f} GB)')
 
 
+def _remove_folder_scratch(paths: FolderPaths, logger: logging.Logger):
+	"""
+	Delete {session}/scratch/ after a FAST run.
+
+	Why: scratch holds only FAST intermediates; permanent outputs live on root.
+	Called from process_folder finally so failures still clean up.
+	"""
+	if os.path.isdir(paths.scratch):
+		shutil.rmtree(paths.scratch)
+		logger.info(f"  Removed scratch: {paths.scratch}")
+
+
 def step5_cleanup(
 	paths: FolderPaths, logger: logging.Logger, monitor: MemoryMonitor,
 	recorder=None,
@@ -652,17 +619,12 @@ def step5_cleanup(
 	"""
 	Post-processing cleanup:
 	  1. Copy one example result TIFF to the root folder for quick inspection
-	  2. Delete intermediate subdirs (registered/, training/, result/)
-	  3. Delete the tmpfs scratch dir itself to free RAM
-	  4. Remove temporary _run_config.json
-	  5. Write the _fast_complete sentinel file
+	  2. Remove temporary _run_config.json
+	  3. Write the _fast_complete sentinel file
 
 	The sentinel is written LAST — its presence is the only reliable signal
-	that the full pipeline completed. The auto-skip check in process_folder
-	uses this sentinel on subsequent runs.
-
-	The scratch dir is only deleted if it differs from root — guard against
-	misconfiguration where SCRATCH_DIR equals the permanent data drive.
+	that the full pipeline completed. Scratch removal happens in process_folder
+	finally (success or failure).
 	"""
 	with log_step(logger, monitor, 'step5_cleanup', recorder) as step_detail:
 		result_tifs = sort_tif_stack_paths(glob.glob(os.path.join(paths.result, '*.tif')))
@@ -672,17 +634,6 @@ def step5_cleanup(
 			logger.info(f"  Example TIFF: {os.path.basename(dest)}")
 		else:
 			logger.warning("  No result TIFFs found to copy as example")
-
-		# Delete intermediate subdirs
-		for d in [paths.registered, paths.training, paths.result]:
-			if os.path.exists(d):
-				shutil.rmtree(d)
-				logger.debug(f"  Deleted: {d}")
-
-		# Delete scratch dir itself to free tmpfs RAM — guard against root == scratch
-		if paths.scratch != paths.root and os.path.exists(paths.scratch):
-			shutil.rmtree(paths.scratch)
-			logger.debug(f"  Deleted scratch: {paths.scratch}")
 
 		run_config = os.path.join(paths.root, '_run_config.json')
 		if os.path.exists(run_config):
@@ -728,7 +679,7 @@ def process_folder(
 	A crashed run can always be safely restarted — completed work is preserved
 	and partial intermediate files are cleaned up automatically.
 	"""
-	paths = FolderPaths.from_root(dataFolder, cfg.scratch_dir)
+	paths = FolderPaths.from_root(dataFolder)
 	recorder = recorder or StepRecorder()
 
 	if not os.path.exists(paths.h5):
@@ -761,7 +712,9 @@ def process_folder(
 	logger.info(f"Processing: {dataFolder}")
 	logger.info(f"{'='*60}")
 
+	ran_fast = False
 	try:
+		ran_fast = True
 		checkpoint_config = _find_latest_checkpoint_config(paths.checkpoint)
 		skip_training     = cfg.skip_training or (checkpoint_config is not None)
 
@@ -808,6 +761,9 @@ def process_folder(
 			summary['artifacts_note'] = 'checkpoint/ (partial), no inference.h5, no _fast_complete'
 		_write_fast_summary(summary_out, summary)
 		raise
+	finally:
+		if ran_fast:
+			_remove_folder_scratch(paths, logger)
 
 
 # =============================================================================

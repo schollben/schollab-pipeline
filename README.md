@@ -49,7 +49,7 @@ Two conda environments — kept separate due to dependency conflicts:
 | `caiman` | Motion correction | `$SCHOLLAB_CONDA_ROOT/envs/caiman/bin/python` |
 | `FAST` | Denoising | `$SCHOLLAB_CONDA_ROOT/envs/FAST/bin/python` |
 
-**Preferred setup** (creates/updates both envs, enables systemd linger, creates log dir, configures scratch tmpfs — may prompt for **sudo** at the end):
+**Preferred setup** (creates/updates both envs, enables systemd linger, creates log dirs):
 
 ```bash
 bash PreProcess2PImages.sh --setup
@@ -91,24 +91,11 @@ FAST gets its own subprocess environment from [`fast/config.json`](fast/config.j
 
 The worker logs the FAST thread environment before launching `fast/denoising.py`, which makes `journalctl --user -u schollab-PreProcess2PImages` useful for checking the active CPU settings.
 
-### FAST scratch directory (`scratch_dir` in `fast/config.json`)
+### FAST scratch (`scratch/` inside each session folder)
 
-FAST expands `$HOME` / `~` in `fast_dir` and `scratch_dir`, so the default config follows the current Linux user instead of a hardcoded lab account. Override machine-specific locations when needed:
+FAST writes intermediates (`scratch/registered/`, `scratch/training/`, `scratch/result/`) **inside each input folder** — e.g. `/mnt/bigdata/BRUKER/TSeries-001/scratch/`. Permanent outputs (`checkpoint/`, `inference.h5`, `_fast_complete`) stay in the session root.
 
-```bash
-export FAST_DIR="$HOME/Documents/FAST"
-export FAST_SCRATCH_DIR="$HOME/Documents/scratch"
-```
-
-FAST uses `scratch_dir` (or `FAST_SCRATCH_DIR`) for fast intermediate I/O. On **`bash PreProcess2PImages.sh --setup`** or the first normal **`bash PreProcess2PImages.sh`** run, the script prompts for **sudo** to:
-
-- create the mount point directory,
-- append a **tmpfs** line to `/etc/fstab` (if not already present),
-- run `sudo mount` so it matches reboot behavior.
-
-Tune the RAM cap by editing `SCRATCH_TMPFS_SIZE` at the top of `PreProcess2PImages.sh`. If `scratch_dir` already exists as a **non-empty** directory and is not mounted, the script exits rather than overlay tmpfs and hide files.
-
-**Note:** `bash PreProcess2PImages.sh` (GUI start) may have tmpfs setup commented out in favor of a disk-backed `scratch_dir`; **`--setup`** still configures tmpfs if you use that workflow. Check comments at the bottom of [`PreProcess2PImages.sh`](PreProcess2PImages.sh).
+The `scratch/` directory is **removed automatically at the end of every FAST run** (success or failure). Put session folders on fast local disk when possible so scratch I/O does not compete with bulk archive storage.
 
 ## Performance tuning guide
 
@@ -120,7 +107,7 @@ Choose settings from dataset size, host RAM/CPU/GPU, and how much swap pressure 
 free -h          # RAM + swap
 nproc            # logical CPUs
 nvidia-smi       # GPU (FAST needs CUDA)
-df -h /mnt/bigdata "$HOME/Documents/scratch"
+df -h /mnt/bigdata
 ```
 
 | Host RAM | Typical safe starting point |
@@ -176,8 +163,7 @@ Memory intuition: one 1000-frame 512×512 stack is ~0.5 GB when fully loaded. Pe
 
 | Situation | Recommendation |
 |---|---|
-| Fast local SSD/NVMe for scratch | Set `scratch_dir` to that path, or `export FAST_SCRATCH_DIR=...` |
-| tmpfs via `--setup` | Good for intermediate TIFF/H5 I/O; size is capped by `SCRATCH_TMPFS_SIZE` in `PreProcess2PImages.sh` — do not make tmpfs larger than RAM you can spare |
+| Fast local SSD/NVMe for data | Session folders on fast disk — FAST scratch is colocated (`session/scratch/`) |
 | Scratch on same disk as huge datasets | Slower but safe; prefer smaller `h5_write_batch_frames` if I/O is the bottleneck |
 | Rerun with valid checkpoint | `"skip_training": true` in `fast/config.json` saves training time |
 
@@ -200,7 +186,6 @@ Memory intuition: one 1000-frame 512×512 stack is ~0.5 GB when fully loaded. Pe
 export SCHOLLAB_CONDA_ROOT="$HOME/miniconda3"   # if not using ~/miniforge3
 export CAIMAN_N_PROCESSES=2
 export FAST_DIR="$HOME/Documents/FAST"
-export FAST_SCRATCH_DIR="$HOME/Documents/scratch"
 ```
 
 ### Symptoms → what to change
@@ -210,7 +195,7 @@ export FAST_SCRATCH_DIR="$HOME/Documents/scratch"
 | Swap hits 100% during CaImAn | Motion correction / H5 rewrite | `CAIMAN_N_PROCESSES=2`, keep `threads=1` |
 | `oomd` during FAST inference | Step 3 | Lower `tiff_chunk_size` (e.g. `500`) |
 | Inference finishes, then OOM | Step 4 | Lower `h5_write_batch_frames` (e.g. `64`) |
-| Run completes but very slow | I/O or oversubscribed CPU | Check scratch path; avoid raising both `n_processes` and `num_workers` at once |
+| Run completes but very slow | I/O or oversubscribed CPU | Ensure data + `scratch/` are on fast disk; avoid raising both `n_processes` and `num_workers` at once |
 | Need faster rerun on same data | Training | `skip_training: true` if checkpoint is valid |
 
 ### Logs and completion
@@ -241,12 +226,12 @@ Each mode **scans disk first**, prints a **single manifest** of paths that exist
   2. **`--from-job`**: read `sessions` from **`/tmp/pipeline_job.json`** (GUI job file); override path with env **`JOB_FILE`** if needed.
   3. Else **`data_folders`** in [`fast/config.json`](fast/config.json) (a **WARNING** is printed — may not match GUI-selected folders).
 
-**`scratch_dir`** for FAST scratch subdirs is always taken from `fast/config.json`, even when folders come from the job file.
+FAST intermediates use **`scratch/`** inside each session folder; the pipeline deletes it after each FAST run.
 
 | Mode | Removes (per folder, when present) | Does **not** remove |
 |------|-------------------------------------|---------------------|
 | **clean_caiman** | `unregistered.h5`, `registered.h5`, rigid/nonrigid shift CSVs, `*_rigid.tif` / `*_nonrigid.tif` | Raw acquisition TIFFs (`TSeries_*`, `file_*`, …) |
-| **clean_fast** | `checkpoint/`, `inference.h5`, `_fast_complete`, `_run_config.json`, `_inference_config.json`, example `*_registered_*.tif`, scratch subdir named like the session folder, shared FAST log files under `fast/logs/` | Raw TIFFs / CaImAn H5s |
+| **clean_fast** | `checkpoint/`, `inference.h5`, `_fast_complete`, `_run_config.json`, `_inference_config.json`, example `*_registered_*.tif`, `scratch/`, shared FAST log files under `fast/logs/` | Raw TIFFs / CaImAn H5s |
 | **clean_all** | Union of the above (one manifest) | Same |
 
 If a folder has **`registered.h5`** but **no acquisition TIFs** (previews excluded), you must type **`yes`** before deletion proceeds.
@@ -258,7 +243,7 @@ The registration GUI pre-checks **TIFs→.H5** and **First Rigid** by default fo
 **Skip CaImAn (FAST only):** check this box at the top of the GUI to grey out all CaImAn columns and run denoising only. Each folder must already have `registered.h5`. Remove `_fast_complete` to force a FAST re-run. The GUI warns if any selected folder lacks `registered.h5`.
 
 ```bash
-bash PreProcess2PImages.sh --setup                 # conda envs + linger + scratch tmpfs (new machine)
+bash PreProcess2PImages.sh --setup                 # conda envs + linger + log dirs (new machine)
 bash PreProcess2PImages.sh                        # open GUI, launch pipeline
 bash PreProcess2PImages.sh --attach               # follow live output
 bash PreProcess2PImages.sh --status               # service status + last log lines

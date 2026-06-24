@@ -14,7 +14,7 @@
 #   bash PreProcess2PImages.sh --clean_caiman --from-job  # use /tmp/pipeline_job.json sessions
 #   bash PreProcess2PImages.sh --clean_fast …          # same -- / --from-job / config fallback
 #   bash PreProcess2PImages.sh --clean_all …
-#   bash PreProcess2PImages.sh --setup                # conda envs (caiman + FAST), linger, scratch tmpfs
+#   bash PreProcess2PImages.sh --setup                # conda envs (caiman + FAST), linger, log dirs
 #   bash PreProcess2PImages.sh --schedule-at "2026-06-19T02:00:00" --from-job
 #   bash PreProcess2PImages.sh --list-scheduled
 #   bash PreProcess2PImages.sh --cancel-scheduled BATCH_ID
@@ -32,9 +32,6 @@ FAST_CONFIG_LEGACY="$REPO_DIR/fast/pipeline_config.json"
 # where envs live under e.g. ~/miniconda3 — must match registration.py / pipeline_worker.py.
 SCHOLLAB_CONDA_ROOT="${SCHOLLAB_CONDA_ROOT:-$HOME/miniforge3}"
 CONDA_BIN="${CONDA_BIN:-$SCHOLLAB_CONDA_ROOT/bin/conda}"
-
-# FAST scratch tmpfs size (edit for your machine — must fit in RAM)
-SCRATCH_TMPFS_SIZE="120G"
 
 CAIMAN_PYTHON="$SCHOLLAB_CONDA_ROOT/envs/caiman/bin/python"
 REGISTRATION_SCRIPT="$REPO_DIR/caiman/registration.py"
@@ -163,40 +160,8 @@ _resolve_fast_config() {
 	exit 1
 }
 
-_fast_scratch_dir() {
-	_resolve_fast_config
-	FAST_CONFIG_PATH="$FAST_CONFIG" python3 - <<'PY'
-import json
-import os
-
-with open(os.environ['FAST_CONFIG_PATH']) as f:
-	cfg = json.load(f)
-
-# Match fast/denoising.py: env override, then config value, then Linux user default.
-raw = (
-	os.environ.get('FAST_SCRATCH_DIR')
-	or cfg.get('scratch_dir')
-	or os.path.join('~', 'Documents', 'scratch')
-)
-print(os.path.abspath(os.path.expanduser(os.path.expandvars(raw))))
-PY
-}
-
-# scratch_dir only (GUI runs do not update data_folders in config).
-_read_scratch_config() {
-	SCRATCH_DIR=$(_fast_scratch_dir)
-}
-
-# Legacy full read (unused by --clean; kept for tooling).
-_read_config() {
-	_resolve_fast_config
-	SCRATCH_DIR=$(_fast_scratch_dir)
-	FOLDERS=$(python3 -c "import json; c=json.load(open('$FAST_CONFIG')); [print(f) for f in c['data_folders']]")
-}
-
 # Session folders for --clean_*: paths after -- , --from-job, or config (warn if fallback).
 _resolve_clean_folders() {
-	_read_scratch_config
 	if [ "${#CLEAN_PATHS[@]}" -gt 0 ]; then
 		FOLDERS=$(printf '%s\n' "${CLEAN_PATHS[@]}")
 		echo "── Folder source: ${#CLEAN_PATHS[@]} path(s) after -- ─────────────────────"
@@ -317,21 +282,20 @@ _clean_collect_fast_paths() {
 	while IFS= read -r folder; do
 		folder="${folder%/}"
 		[ -z "$folder" ] && continue
-		local folder_id p tif
-		folder_id=$(basename "$folder")
+		local p tif
 		for p in \
 			"$folder/checkpoint" \
 			"$folder/inference.h5" \
 			"$folder/_fast_complete" \
 			"$folder/_run_config.json" \
-			"$folder/_inference_config.json"
+			"$folder/_inference_config.json" \
+			"$folder/scratch"
 		do
 			[ -e "$p" ] && out+="$p"$'\n'
 		done
 		for tif in "$folder"/*_registered_*.tif; do
 			[ -e "$tif" ] && out+="$tif"$'\n'
 		done
-		[ -e "$SCRATCH_DIR/$folder_id" ] && out+="$SCRATCH_DIR/$folder_id"$'\n'
 	done <<< "$FOLDERS"
 	for p in \
 		"$FAST_LOG_DIR/_pipeline_status.json" \
@@ -378,82 +342,6 @@ _clean_count_nonempty_lines() {
 	echo "$1" | sed '/^$/d' | wc -l | tr -d ' '
 }
 
-# Returns 0 if /etc/fstab already has this mount point as field 2
-_fstab_has_scratch_mount() {
-	local mp="$1"
-	awk -v "mp=$mp" '
-		/^[[:space:]]*#/ { next }
-		NF < 2 { next }
-		$2 == mp { found = 1 }
-		END { exit found ? 0 : 1 }
-	' /etc/fstab 2>/dev/null
-}
-
-# Ensure scratch_dir from fast/config.json is a mounted tmpfs (creates dir,
-# appends /etc/fstab once, mounts). Refuses to overlay tmpfs on a non-empty
-# directory that is not already the mount point — avoids hiding existing data.
-_ensure_scratch_tmpfs() {
-	local SCRATCH_DIR
-	SCRATCH_DIR=$(_fast_scratch_dir)
-
-	if mountpoint -q "$SCRATCH_DIR" 2>/dev/null; then
-		if [ ! -w "$SCRATCH_DIR" ]; then
-			echo "ERROR: scratch_dir is mounted but not writable: $SCRATCH_DIR"
-			exit 1
-		fi
-		echo "  Scratch (tmpfs): $SCRATCH_DIR (already mounted)"
-		return 0
-	fi
-
-	if [ -d "$SCRATCH_DIR" ] && [ -n "$(ls -A "$SCRATCH_DIR" 2>/dev/null)" ]; then
-		echo "ERROR: scratch_dir exists, is not mounted, and is not empty:"
-		echo "  $SCRATCH_DIR"
-		echo "  Empty it or pick a different scratch_dir in fast/config.json"
-		echo "  before mounting tmpfs (would hide existing files)."
-		exit 1
-	fi
-
-	echo "  Configuring FAST scratch tmpfs at $SCRATCH_DIR (sudo required once)..."
-
-	_sudo_or_die() {
-		if ! sudo "$@"; then
-			echo ""
-			echo "ERROR: sudo failed. Configure manually, then re-run PreProcess2PImages.sh:"
-			echo "  sudo mkdir -p $SCRATCH_DIR"
-			echo "  Add to /etc/fstab:"
-			echo "    tmpfs	${SCRATCH_DIR}	tmpfs	defaults,size=${SCRATCH_TMPFS_SIZE},mode=0777	0	0"
-			echo "  sudo mount ${SCRATCH_DIR}"
-			exit 1
-		fi
-	}
-
-	_sudo_or_die mkdir -p "$SCRATCH_DIR"
-
-	if ! _fstab_has_scratch_mount "$SCRATCH_DIR"; then
-		{
-			echo ""
-			echo "# PreProcess2PImages FAST scratch (tmpfs)"
-			echo "tmpfs	${SCRATCH_DIR}	tmpfs	defaults,size=${SCRATCH_TMPFS_SIZE},mode=0777	0	0"
-		} | _sudo_or_die tee -a /etc/fstab >/dev/null
-	fi
-
-	_sudo_or_die mount "$SCRATCH_DIR"
-
-	if ! mountpoint -q "$SCRATCH_DIR" 2>/dev/null; then
-		echo "ERROR: $SCRATCH_DIR is not a mountpoint after 'sudo mount'. Check /etc/fstab and syslog."
-		exit 1
-	fi
-
-	local tfile
-	tfile="$SCRATCH_DIR/.schollab_scratch_writable_test.$$"
-	if ! touch "$tfile" 2>/dev/null; then
-		echo "ERROR: scratch_dir is not writable after mount: $SCRATCH_DIR"
-		exit 1
-	fi
-	rm -f "$tfile"
-	echo "  Scratch (tmpfs): $SCRATCH_DIR mounted and writable"
-}
-
 # Require Miniforge/conda on disk (no auto-install).
 _conda_bin_or_die() {
 	if [ ! -x "$CONDA_BIN" ]; then
@@ -498,9 +386,9 @@ _setup_conda_envs() {
 	"$CONDA_BIN" run -n FAST pip install -r "$req"
 }
 
-# One-shot / refresh: envs, linger, log dir, scratch tmpfs (sudo at end).
+# One-shot / refresh: conda envs, linger, log dirs.
 _setup_run() {
-	echo "Schollab pipeline — setup (conda envs + scratch)"
+	echo "Schollab pipeline — setup (conda envs)"
 	echo "  Repo:            $REPO_DIR"
 	echo "  Conda prefix:    $SCHOLLAB_CONDA_ROOT"
 	echo "  Conda binary:    $CONDA_BIN"
@@ -513,8 +401,7 @@ _setup_run() {
 	echo ""
 	mkdir -p "$FAST_LOG_DIR"
 	mkdir -p "$PIPELINE_LOG_DIR"
-	echo "── FAST scratch tmpfs ─────────────────────────────────"
-	_ensure_scratch_tmpfs
+	echo "  Log dirs: $PIPELINE_LOG_DIR, $FAST_LOG_DIR"
 	echo ""
 	echo "Setup complete. Next: bash PreProcess2PImages.sh"
 }
@@ -523,7 +410,6 @@ _setup_run() {
 
 _clean_caiman() {
 	_resolve_clean_folders
-	echo "  Scratch: $SCRATCH_DIR"
 	local manifest n
 	manifest=$(_clean_collect_caiman_paths)
 	_clean_print_manifest "Clean CaImAn artifacts" "$manifest"
@@ -547,7 +433,7 @@ _clean_caiman() {
 
 _clean_fast() {
 	_resolve_clean_folders
-	echo "  Scratch: $SCRATCH_DIR"
+	echo "  Per-folder scratch: <session>/scratch/ (in manifest when present)"
 	echo "  Logs:    $FAST_LOG_DIR"
 	local manifest n
 	manifest=$(_clean_collect_fast_paths)
@@ -571,7 +457,7 @@ _clean_fast() {
 
 _clean_all() {
 	_resolve_clean_folders
-	echo "  Scratch: $SCRATCH_DIR"
+	echo "  Per-folder scratch: <session>/scratch/ (in manifest when present)"
 	echo "  Logs:    $FAST_LOG_DIR"
 	local m1 m2 merged n
 	m1=$(_clean_collect_caiman_paths)
@@ -713,9 +599,6 @@ loginctl enable-linger "$USER"
 
 mkdir -p "$FAST_LOG_DIR"
 mkdir -p "$PIPELINE_LOG_DIR"
-
-# FAST scratch tmpfs — disabled: use disk-backed scratch_dir in fast/config.json.
-# _ensure_scratch_tmpfs
 
 echo "Starting PreProcess2PImages..."
 echo "  Caiman python: $CAIMAN_PYTHON"
