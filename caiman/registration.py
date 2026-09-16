@@ -33,6 +33,7 @@ for _thread_env, _thread_default in CAIMAN_CONFIG.get('threads', {}).items():
 	os.environ.setdefault(_thread_env, str(_thread_default))
 
 import cv2
+import math
 import h5py
 import glob
 import pathlib
@@ -161,29 +162,25 @@ def _save_motion_outputs(parent_dir, mc, mc_dict):
 	return numframes, fnames_new
 
 
-def _copy_mmap_and_collect_std(datafile, mov, numframes, window=STD_WINDOW):
+def _try_write_std_projection(parent_dir, datafile, numframes):
 	"""
-	Copy mmap frames into registered.h5; collect STD of each full window.
+	Write std_projection.tif after registered.h5 / sample TIFF already exist.
 
-	Why STD here: this function runs only after motion correction, and the
-	mmap is already sliced in `window`-frame chunks (1000), so the projection
-	does not need a second pass over the movie.
+	Why best-effort: STD is additive. A write failure must not skip 01_rigid.tif
+	or mark motion correction failed.
 	"""
-	frames_written = 0
-	std_frames = []
-	for _ in range(numframes // window):
-		temp_data = np.array(mov[frames_written:frames_written + window, :, :])
-		actual_frames = temp_data.shape[0]
-		datafile["mov"][frames_written:frames_written + actual_frames, :, :] = temp_data
-		frames_written += actual_frames
-		std_frames.append(std_of_window(temp_data))
-	if numframes > frames_written:
-		temp_data = np.array(mov[frames_written:mov.shape[0], :, :])
-		datafile["mov"][frames_written:mov.shape[0], :, :] = temp_data
-		frames_written = mov.shape[0]
-		del temp_data
-	print(f"  Rewrote corrected H5 frames: {frames_written}")
-	return std_frames
+	try:
+		std_frames = []
+		for i in range(numframes // STD_WINDOW):
+			start = i * STD_WINDOW
+			chunk = np.array(datafile["mov"][start:start + STD_WINDOW, :, :])
+			std_frames.append(std_of_window(chunk))
+		write_std_projection_tiff(parent_dir, std_frames)
+	except Exception as exc:
+		print(
+			f"  WARNING: STD projection TIFF failed; "
+			f"registered.h5 and sample TIFF kept: {exc}"
+		)
 
 
 def _write_registered_h5(parent_dir, source_h5, mmap_h5, numframes, save_sample, sample_name):
@@ -191,6 +188,7 @@ def _write_registered_h5(parent_dir, source_h5, mmap_h5, numframes, save_sample,
 	registered_h5 = os.path.join(parent_dir, 'registered.h5')
 	os.replace(source_h5, registered_h5)
 	datafile = h5py.File(registered_h5, 'w')
+	frames_written = 0
 	mov = None
 
 	try:
@@ -198,10 +196,22 @@ def _write_registered_h5(parent_dir, source_h5, mmap_h5, numframes, save_sample,
 		print(f"  Rewriting corrected H5: {registered_h5} ({numframes} frames)")
 		# Load the CaImAn mmap once; chunk slices avoid repeatedly reopening the same file.
 		mov = cm.load(mmap_h5)
-		# STD TIFF is a motion-correction artifact — only written on this path.
-		std_frames = _copy_mmap_and_collect_std(datafile, mov, numframes)
-		write_std_projection_tiff(parent_dir, std_frames)
+		for i in range(0, math.floor(numframes / 1000)):
+			temp_data = np.array(mov[frames_written:frames_written + 1000, :, :])
+			actual_frames = temp_data.shape[0]
+			datafile["mov"][frames_written:frames_written + actual_frames, :, :] = temp_data
+			frames_written += actual_frames
+
+		if numframes > frames_written:
+			temp_data = np.array(mov[frames_written:mov.shape[0], :, :])
+			datafile["mov"][frames_written:mov.shape[0], :, :] = temp_data
+			frames_written = mov.shape[0]
+			del temp_data
+
+		print(f"  Rewrote corrected H5 frames: {frames_written}")
 		_write_sample_tiff(parent_dir, sample_name, datafile, numframes, save_sample)
+		# Additive: STD TIFF only after existing MC artifacts are written.
+		_try_write_std_projection(parent_dir, datafile, numframes)
 	finally:
 		if mov is not None:
 			del mov
