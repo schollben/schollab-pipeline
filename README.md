@@ -35,10 +35,10 @@ PreProcess2PImages/
 **Prerequisite:** [Miniforge](https://github.com/conda-forge/miniforge), Miniconda, or another conda install whose prefix contains `bin/conda` and `envs/`.
 
 - **Default prefix** is `~/miniforge3` (paths like `$HOME/miniforge3/envs/caiman/bin/python`).
-- On a machine where conda lives under **`~/miniconda3`** (or anywhere else), set:
+- On a machine where conda lives under **`~/miniconda3`**, **`~/anaconda3`**, or anywhere else, set that prefix:
 
   ```bash
-  export SCHOLLAB_CONDA_ROOT="$HOME/miniconda3"
+  export SCHOLLAB_CONDA_ROOT="$HOME/anaconda3"   # or ~/miniconda3
   ```
 
   before `bash PreProcess2PImages.sh` / the GUI. `PreProcess2PImages.sh` derives **`CONDA_BIN`** from `SCHOLLAB_CONDA_ROOT` unless you override **`CONDA_BIN`** directly. The GUI passes **`SCHOLLAB_CONDA_ROOT`** into the systemd worker so FAST uses the same prefix.
@@ -209,7 +209,7 @@ export FAST_SCRATCH_DIR="$HOME/Documents/scratch"
 | Symptom | Likely stage | Try first |
 |---|---|---|
 | Swap hits 100% during CaImAn | Motion correction / H5 rewrite | `CAIMAN_N_PROCESSES=2`, keep `threads=1` |
-| `cannot enable executable stack` / TensorFlow import | GUI or systemd worker start | Already handled: launcher sets `GLIBC_TUNABLES=glibc.rtld.execstack=2`. `git pull` this branch, then re-run `bash PreProcess2PImages.sh`. |
+| `cannot enable executable stack` / TensorFlow import | GUI or systemd worker start | Launcher sets `GLIBC_TUNABLES=glibc.rtld.execstack=2` for the GUI and systemd worker (newer glibc rejects TensorFlow’s executable-stack library). |
 | `oomd` during FAST inference | Step 3 | Lower `tiff_chunk_size` (e.g. `500`) |
 | Inference finishes, then OOM | Step 4 | Lower `h5_write_batch_frames` (e.g. `64`) |
 | Run completes but very slow | I/O or oversubscribed CPU | Check scratch path; avoid raising both `n_processes` and `num_workers` at once |
@@ -283,8 +283,19 @@ The pipeline runs as a systemd user service — it survives display/GDM crashes.
 ## Per-folder flow
 
 For each selected folder:
-1. CaImAn: TIF stacks → `unregistered.h5` → motion correction → `registered.h5` + `std_projection.tif` (STD of every 1000 motion-corrected frames; not written if motion correction is skipped)
+1. CaImAn: TIF stacks → `unregistered.h5` → motion correction → `registered.h5` (+ `std_projection.tif` when a motion step ran)
 2. FAST: reads `registered.h5` → trains U-Net → inference → `inference.h5` + `_fast_complete`
+
+### STD projection TIFF (additive)
+
+After motion correction writes `registered.h5` and the sample TIFF, CaImAn also writes **`std_projection.tif`** in the same session folder:
+
+- One TIFF page per **1000** motion-corrected frames (standard-deviation projection).
+- A leftover shorter than 1000 frames is **omitted from this TIFF only**. Those frames stay in `registered.h5`.
+- **Not written** if motion correction is skipped (`skip_caiman`, TIFs→H5 only, or a failed MC step).
+- `--clean_caiman` removes it. It is not treated as an acquisition TIFF.
+
+TIFs→H5 still writes every stack, including a shorter last OME TIFF (the tqdm bar used to say “all but last stack”; that was the full-length files first, then the last file). Motion correction is unchanged.
 
 ## Why folders are skipped (and when)
 
