@@ -19,6 +19,7 @@ from pipeline_job import (  # noqa: E402
 	resolve_skip_caiman,
 	run_timing_path,
 	validate_job,
+	sort_folders_by_mtime,
 	want_unregistered_h5,
 	write_run_timing,
 )
@@ -50,6 +51,25 @@ class TestResolveSkipCaiman(unittest.TestCase):
 
 	def test_job_true_without_cli(self):
 		self.assertTrue(resolve_skip_caiman(True, cli_skip_caiman=False))
+
+
+class TestSortFoldersByMtime(unittest.TestCase):
+	def test_newest_first(self):
+		with tempfile.TemporaryDirectory() as tmp:
+			old = os.path.join(tmp, 'old_session')
+			new = os.path.join(tmp, 'new_session')
+			os.makedirs(old)
+			os.makedirs(new)
+			os.utime(old, (1_000_000, 1_000_000))
+			os.utime(new, (2_000_000, 2_000_000))
+			self.assertEqual(sort_folders_by_mtime([old, new]), [new, old])
+
+	def test_missing_path_sorts_last(self):
+		with tempfile.TemporaryDirectory() as tmp:
+			exists = os.path.join(tmp, 'exists')
+			os.makedirs(exists)
+			missing = os.path.join(tmp, 'gone')
+			self.assertEqual(sort_folders_by_mtime([missing, exists]), [exists, missing])
 
 
 class TestWantUnregisteredH5(unittest.TestCase):

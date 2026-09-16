@@ -216,6 +216,22 @@ def try_acquire_batch_lock(batch_id, unit_name, pid):
 	return True
 
 
+def sort_folders_by_mtime(paths, newest_first=True):
+	"""
+	Order session folders by directory mtime.
+
+	Newest first so recent recordings sit at the top of the GUI checklist
+	and run first in the batch. Unreadable paths sort last.
+	"""
+	def mtime(path):
+		try:
+			return os.path.getmtime(path)
+		except OSError:
+			return 0.0
+
+	return sorted(paths, key=mtime, reverse=newest_first)
+
+
 def want_unregistered_h5(row):
 	"""
 	Write unregistered.h5 only when TIFs→H5 is requested and no motion step is on.
