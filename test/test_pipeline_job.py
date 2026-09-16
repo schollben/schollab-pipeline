@@ -21,7 +21,12 @@ from pipeline_job import (  # noqa: E402
 	validate_job,
 	write_run_timing,
 )
-from pipeline_launcher import build_immediate_job, build_job, build_scheduled_job  # noqa: E402
+from pipeline_launcher import (  # noqa: E402
+	build_immediate_job,
+	build_job,
+	build_scheduled_job,
+	glibc_tunables_for_caiman,
+)
 
 
 class TestApplySkipCaiman(unittest.TestCase):
@@ -149,6 +154,23 @@ class TestBatchJobValidation(unittest.TestCase):
 			path = batch_log_path(tmp, 'test-batch')
 			self.assertTrue(path.endswith('batch_test-batch.log'))
 			self.assertTrue(os.path.isdir(os.path.join(tmp, 'logs')))
+
+
+class TestGlibcTunablesForCaiman(unittest.TestCase):
+	def test_default_forces_execstack(self):
+		self.assertEqual(glibc_tunables_for_caiman(''), 'glibc.rtld.execstack=2')
+
+	def test_appends_when_other_tunables_present(self):
+		self.assertEqual(
+			glibc_tunables_for_caiman('glibc.malloc.check=3'),
+			'glibc.malloc.check=3:glibc.rtld.execstack=2',
+		)
+
+	def test_leaves_existing_execstack_alone(self):
+		self.assertEqual(
+			glibc_tunables_for_caiman('glibc.rtld.execstack=0'),
+			'glibc.rtld.execstack=0',
+		)
 
 
 if __name__ == '__main__':

@@ -209,6 +209,7 @@ export FAST_SCRATCH_DIR="$HOME/Documents/scratch"
 | Symptom | Likely stage | Try first |
 |---|---|---|
 | Swap hits 100% during CaImAn | Motion correction / H5 rewrite | `CAIMAN_N_PROCESSES=2`, keep `threads=1` |
+| `cannot enable executable stack` / TensorFlow import | GUI or systemd worker start | Already handled: launcher sets `GLIBC_TUNABLES=glibc.rtld.execstack=2`. `git pull` this branch, then re-run `bash PreProcess2PImages.sh`. |
 | `oomd` during FAST inference | Step 3 | Lower `tiff_chunk_size` (e.g. `500`) |
 | Inference finishes, then OOM | Step 4 | Lower `h5_write_batch_frames` (e.g. `64`) |
 | Run completes but very slow | I/O or oversubscribed CPU | Check scratch path; avoid raising both `n_processes` and `num_workers` at once |

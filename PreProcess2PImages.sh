@@ -94,6 +94,18 @@ _active_unit() {
 	fi
 }
 
+# TensorFlow in the caiman env requests an executable stack. glibc 2.41+
+# refuses that at dlopen unless this tunable is set when Python starts.
+# systemd-run does not inherit the GUI shell unless the launcher --setenv's it.
+_ensure_glibc_tf_tunable() {
+	local needle="glibc.rtld.execstack="
+	if [ -z "${GLIBC_TUNABLES:-}" ]; then
+		export GLIBC_TUNABLES="glibc.rtld.execstack=2"
+	elif [[ "$GLIBC_TUNABLES" != *"$needle"* ]]; then
+		export GLIBC_TUNABLES="${GLIBC_TUNABLES}:glibc.rtld.execstack=2"
+	fi
+}
+
 # Human-readable duration from seconds (float ok).
 _format_duration() {
 	python3 -c "s=float('${1:-0}'); h=int(s//3600); m=int((s%3600)//60); sec=s%60; print(f'{h}h {m}m {sec:.0f}s' if h else f'{m}m {sec:.0f}s')"
@@ -725,6 +737,8 @@ echo "  Repo:          $REPO_DIR"
 echo ""
 echo "Opening folder selection GUI..."
 echo ""
+
+_ensure_glibc_tf_tunable
 
 # Blocks until user clicks Run; registration.py writes job JSON + launches systemd service
 "$CAIMAN_PYTHON" "$REGISTRATION_SCRIPT"
