@@ -87,8 +87,8 @@ class CheckListFrame(wx.Frame):
             )
             for col in range(self.check_cols):
                 checkbox = wx.CheckBox(self.panel)
-                # Default TIFs->.H5 + First Rigid for full pipeline runs.
-                if col in (0, 1):
+                # First Rigid on. TIFs→H5 off: MC reads TIFFs; unregistered.h5 is opt-in.
+                if col == 1:
                     checkbox.SetValue(True)
                 self.checkboxes[col].append(checkbox)
                 grid_sizer.Add(checkbox, pos=(row, col + 1), flag=wx.ALL | wx.ALIGN_CENTER, border=5)

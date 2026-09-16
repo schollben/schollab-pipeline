@@ -56,6 +56,52 @@ def _acquisition_tif_paths(sorted_paths):
     return out
 
 
+def list_acquisition_tiffs(tif_dir, channel='Ch2'):
+    """
+    TIFF paths tif_stacks_to_h5 would write — same Ch2 / artifact filter.
+
+    Returns [] when the folder has no matching acquisition files so motion
+    correction can fall back to an existing H5 instead of asserting.
+    """
+    all_tifs = [
+        f for f in sorted(glob(os.path.join(tif_dir, "*.tif")))
+        if 'References' not in f
+    ]
+    if not any(not is_pipeline_artifact_tif(f) for f in all_tifs):
+        return []
+    all_tifs = _acquisition_tif_paths(all_tifs)
+    if channel is not None:
+        has_channel_token = any('Ch' in os.path.basename(f) for f in all_tifs)
+        if has_channel_token:
+            tif_fnames = [f for f in all_tifs if f'_{channel}_' in os.path.basename(f)]
+        else:
+            tif_fnames = all_tifs
+    else:
+        tif_fnames = all_tifs
+    return tif_fnames
+
+
+def motion_correction_inputs(parent_dir, channel='Ch2'):
+    """
+    Inputs for CaImAn MotionCorrect: acquisition TIFFs first, then existing H5.
+
+    Why TIFFs first: unregistered.h5 is opt-in and is not written on MC runs.
+    H5 fallback is only for folders whose TIFFs were already removed.
+    """
+    tiffs = list_acquisition_tiffs(parent_dir, channel=channel)
+    if tiffs:
+        return tiffs
+    unreg = os.path.join(parent_dir, 'unregistered.h5')
+    if os.path.isfile(unreg):
+        return [unreg]
+    reg = os.path.join(parent_dir, 'registered.h5')
+    if os.path.isfile(reg):
+        return [reg]
+    raise FileNotFoundError(
+        f"No acquisition TIFFs or registered.h5 in {parent_dir}."
+    )
+
+
 def tif_stacks_to_h5(tif_dir, h5_savename, h5_key='mov', delete_tiffs=False, frame_offset=False, offset=30, channel='Ch2'):
     '''
     Convert .tif stacks from BRUKER/SCANIMAGE to monolithic .h5 files.
@@ -75,16 +121,7 @@ def tif_stacks_to_h5(tif_dir, h5_savename, h5_key='mov', delete_tiffs=False, fra
         Returns:
             None - Writes .h5 file to disk at 'h5_savename' containing calcium movie data.
     '''
-    all_tifs = sorted(glob(os.path.join(tif_dir, "*.tif")))
-    all_tifs = _acquisition_tif_paths(all_tifs)
-    if channel is not None:
-        has_channel_token = any('Ch' in os.path.basename(f) for f in all_tifs)
-        if has_channel_token:
-            tif_fnames = [f for f in all_tifs if f'_{channel}_' in os.path.basename(f)]
-        else:
-            tif_fnames = all_tifs
-    else:
-        tif_fnames = all_tifs
+    tif_fnames = list_acquisition_tiffs(tif_dir, channel=channel)
     assert len(tif_fnames) > 0, f"No TIF files found in {tif_dir}" + (f" for channel '{channel}'" if channel else "") + "."
     print(f"\nFound {len(tif_fnames)} TIFF stacks to write ({channel or 'all channels'}):")
     for f in tif_fnames:

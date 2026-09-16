@@ -255,7 +255,7 @@ If a folder has **`registered.h5`** but **no acquisition TIFs** (previews exclud
 
 ## Running the pipeline
 
-The registration GUI pre-checks **TIFs→.H5** and **First Rigid** by default for each folder so motion correction runs and `registered.h5` exists for FAST if you leave defaults; adjust the columns per folder as needed.
+The registration GUI pre-checks **First Rigid** by default so motion correction runs and `registered.h5` exists for FAST. **TIFs→.H5** is off by default — check it only if you want `unregistered.h5` and no motion step.
 
 **Skip CaImAn (FAST only):** check this box at the top of the GUI to grey out all CaImAn columns and run denoising only. Each folder must already have `registered.h5`. Remove `_fast_complete` to force a FAST re-run. The GUI warns if any selected folder lacks `registered.h5`.
 
@@ -283,7 +283,7 @@ The pipeline runs as a systemd user service — it survives display/GDM crashes.
 ## Per-folder flow
 
 For each selected folder:
-1. CaImAn: TIF stacks → `unregistered.h5` → motion correction → `registered.h5` (+ `std_projection.tif` when a motion step ran)
+1. CaImAn: acquisition TIFFs → motion correction → `registered.h5` (+ `std_projection.tif` when a motion step ran). `unregistered.h5` is **not** written unless **TIFs→H5** is checked with no motion step.
 2. FAST: reads `registered.h5` → trains U-Net → inference → `inference.h5` + `_fast_complete`
 
 ### STD projection TIFF (additive)
@@ -295,7 +295,7 @@ After motion correction writes `registered.h5` and the sample TIFF, CaImAn also 
 - **Not written** if motion correction is skipped (`skip_caiman`, TIFs→H5 only, or a failed MC step).
 - `--clean_caiman` removes it. It is not treated as an acquisition TIFF.
 
-TIFs→H5 still writes every stack, including a shorter last OME TIFF (the tqdm bar used to say “all but last stack”; that was the full-length files first, then the last file). Motion correction is unchanged.
+When **TIFs→H5** is requested with no motion step, every stack is written into `unregistered.h5`, including a shorter last OME TIFF (the tqdm bar used to say “all but last stack”; that was the full-length files first, then the last file). Motion correction reads TIFFs directly and does not create `unregistered.h5`.
 
 ## Why folders are skipped (and when)
 
@@ -303,7 +303,8 @@ The pipeline is designed to continue to the next folder when one folder is incom
 
 ### CaImAn-side skip conditions
 
-- **No source acquisition TIFFs while `TIFs→H5` is checked:** CaImAn prints `Skipping TIFs→H5 step — registered.h5 left untouched.` and does not overwrite existing H5 files.
+- **No source acquisition TIFFs while `TIFs→H5` is checked (and no motion step):** CaImAn prints `Skipping TIFs→H5 step — registered.h5 left untouched.` and does not overwrite existing H5 files.
+- **`TIFs→H5` checked together with a motion step:** TIFs→H5 is ignored; motion correction reads TIFFs and does not write `unregistered.h5`.
 - **`TIFs→H5` checked but no motion step checked:** only `unregistered.h5` is produced; CaImAn warns that FAST will skip because `registered.h5` is never created.
 - **CaImAn raises an exception for a folder:** worker logs `Skipping FAST for this folder and continuing.` and moves to the next folder.
 

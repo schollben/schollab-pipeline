@@ -19,6 +19,7 @@ from pipeline_job import (  # noqa: E402
 	resolve_skip_caiman,
 	run_timing_path,
 	validate_job,
+	want_unregistered_h5,
 	write_run_timing,
 )
 from pipeline_launcher import (  # noqa: E402
@@ -49,6 +50,18 @@ class TestResolveSkipCaiman(unittest.TestCase):
 
 	def test_job_true_without_cli(self):
 		self.assertTrue(resolve_skip_caiman(True, cli_skip_caiman=False))
+
+
+class TestWantUnregisteredH5(unittest.TestCase):
+	def test_default_mc_does_not_write(self):
+		# GUI default: TIFs→H5 off, First Rigid on.
+		self.assertFalse(want_unregistered_h5([False, True, False, False]))
+
+	def test_both_checked_does_not_write(self):
+		self.assertFalse(want_unregistered_h5([True, True, False, False]))
+
+	def test_requested_without_motion(self):
+		self.assertTrue(want_unregistered_h5([True, False, False, False]))
 
 
 class TestFoldersMissingRegisteredH5(unittest.TestCase):
