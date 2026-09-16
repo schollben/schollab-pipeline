@@ -5,6 +5,7 @@ import tifffile
 import numpy as np
 import h5py
 from tqdm import tqdm
+from std_projection import is_pipeline_artifact_tif
 
 
 def _scanimage_tiffs_one_cycle(paths, cycle_re):
@@ -32,17 +33,18 @@ def _acquisition_tif_paths(sorted_paths):
     """
     Select TIFFs that belong to the recording, not CaImAn preview exports.
 
-    Why: sample movies (01_rigid.tif, …) sort before ScanImage stacks (file_* /
-    TSeries_*) and break depth checks. Prefer one homogeneous naming series.
+    Why: sample movies (01_rigid.tif, …) and std_projection.tif sort before
+    ScanImage stacks (file_* / TSeries_*) and break depth checks. Prefer one
+    homogeneous naming series.
     """
     out = []
     for f in sorted_paths:
-        b = os.path.basename(f)
-        if b.endswith('_rigid.tif') or b.endswith('_nonrigid.tif'):
+        if is_pipeline_artifact_tif(f):
             continue
         out.append(f)
     assert len(out) > 0, (
-        "No acquisition TIFFs left after excluding *_rigid.tif / *_nonrigid.tif — "
+        "No acquisition TIFFs left after excluding CaImAn artifacts "
+        "(*_rigid.tif, *_nonrigid.tif, std_projection.tif) — "
         "folder may contain only CaImAn sample exports."
     )
     tseries = [f for f in out if os.path.basename(f).startswith('TSeries_')]

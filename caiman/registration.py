@@ -33,7 +33,6 @@ for _thread_env, _thread_default in CAIMAN_CONFIG.get('threads', {}).items():
 	os.environ.setdefault(_thread_env, str(_thread_default))
 
 import cv2
-import math
 import h5py
 import glob
 import pathlib
@@ -62,6 +61,13 @@ from pipeline_job import apply_skip_caiman
 from pipeline_run_log import CAIMAN_STEP_LABELS
 from tif_to_h5 import tif_stacks_to_h5
 from tiff_compat import tiff_writer_append
+from std_projection import (
+	STD_TIFF_NAME,
+	STD_WINDOW,
+	is_pipeline_artifact_tif,
+	std_of_window,
+	write_std_projection_tiff,
+)
 
 global mc
 
@@ -155,12 +161,36 @@ def _save_motion_outputs(parent_dir, mc, mc_dict):
 	return numframes, fnames_new
 
 
+def _copy_mmap_and_collect_std(datafile, mov, numframes, window=STD_WINDOW):
+	"""
+	Copy mmap frames into registered.h5; collect STD of each full window.
+
+	Why STD here: this function runs only after motion correction, and the
+	mmap is already sliced in `window`-frame chunks (1000), so the projection
+	does not need a second pass over the movie.
+	"""
+	frames_written = 0
+	std_frames = []
+	for _ in range(numframes // window):
+		temp_data = np.array(mov[frames_written:frames_written + window, :, :])
+		actual_frames = temp_data.shape[0]
+		datafile["mov"][frames_written:frames_written + actual_frames, :, :] = temp_data
+		frames_written += actual_frames
+		std_frames.append(std_of_window(temp_data))
+	if numframes > frames_written:
+		temp_data = np.array(mov[frames_written:mov.shape[0], :, :])
+		datafile["mov"][frames_written:mov.shape[0], :, :] = temp_data
+		frames_written = mov.shape[0]
+		del temp_data
+	print(f"  Rewrote corrected H5 frames: {frames_written}")
+	return std_frames
+
+
 def _write_registered_h5(parent_dir, source_h5, mmap_h5, numframes, save_sample, sample_name):
 	# Rename unregistered.h5 -> registered.h5 before writing corrected frames.
 	registered_h5 = os.path.join(parent_dir, 'registered.h5')
 	os.replace(source_h5, registered_h5)
 	datafile = h5py.File(registered_h5, 'w')
-	frames_written = 0
 	mov = None
 
 	try:
@@ -168,19 +198,9 @@ def _write_registered_h5(parent_dir, source_h5, mmap_h5, numframes, save_sample,
 		print(f"  Rewriting corrected H5: {registered_h5} ({numframes} frames)")
 		# Load the CaImAn mmap once; chunk slices avoid repeatedly reopening the same file.
 		mov = cm.load(mmap_h5)
-		for i in range(0, math.floor(numframes / 1000)):
-			temp_data = np.array(mov[frames_written:frames_written + 1000, :, :])
-			actual_frames = temp_data.shape[0]
-			datafile["mov"][frames_written:frames_written + actual_frames, :, :] = temp_data
-			frames_written += actual_frames
-
-		if numframes > frames_written:
-			temp_data = np.array(mov[frames_written:mov.shape[0], :, :])
-			datafile["mov"][frames_written:mov.shape[0], :, :] = temp_data
-			frames_written = mov.shape[0]
-			del temp_data
-
-		print(f"  Rewrote corrected H5 frames: {frames_written}")
+		# STD TIFF is a motion-correction artifact — only written on this path.
+		std_frames = _copy_mmap_and_collect_std(datafile, mov, numframes)
+		write_std_projection_tiff(parent_dir, std_frames)
 		_write_sample_tiff(parent_dir, sample_name, datafile, numframes, save_sample)
 	finally:
 		if mov is not None:
@@ -253,11 +273,14 @@ def _h5_artifact_line(folder, filename):
 
 
 def _sample_tif_artifacts(folder):
-	"""List rigid/nonrigid sample TIFFs produced by motion correction."""
+	"""List rigid/nonrigid sample TIFFs and STD projection from motion correction."""
 	arts = []
 	for pattern in ('*_rigid.tif', '*_nonrigid.tif'):
 		for path in sorted(glob.glob(os.path.join(folder, pattern))):
 			arts.append(os.path.basename(path))
+	std_path = os.path.join(folder, STD_TIFF_NAME)
+	if os.path.isfile(std_path):
+		arts.append(STD_TIFF_NAME)
 	return arts
 
 
@@ -315,7 +338,8 @@ def _register_one_folder(folder, row, mc_dict):
 			if 'References' in f:
 				continue
 			b = os.path.basename(f)
-			if b.endswith('_rigid.tif') or b.endswith('_nonrigid.tif'):
+			# Exclude sample movies and STD projection — they are CaImAn artifacts.
+			if is_pipeline_artifact_tif(b):
 				continue
 			source_tifs.append(f)
 		if not source_tifs:

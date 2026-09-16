@@ -11,7 +11,8 @@ PreProcess2PImages/
 │   ├── registration_gui.py  wxPython folder picker + step checkboxes
 │   ├── config.json          CaImAn runtime settings
 │   ├── tif_to_h5.py         TIF stack → HDF5 conversion
-│   └── h5_to_tif.py         HDF5 → TIF utility
+│   ├── h5_to_tif.py         HDF5 → TIF utility
+│   └── std_projection.py    STD TIFF: one projection per 1000 MC frames
 ├── fast/                    FAST denoising
 │   ├── denoising.py         Entry point: reads config.json
 │   ├── config.json          Data folders + hyperparameters
@@ -245,7 +246,7 @@ Each mode **scans disk first**, prints a **single manifest** of paths that exist
 
 | Mode | Removes (per folder, when present) | Does **not** remove |
 |------|-------------------------------------|---------------------|
-| **clean_caiman** | `unregistered.h5`, `registered.h5`, rigid/nonrigid shift CSVs, `*_rigid.tif` / `*_nonrigid.tif` | Raw acquisition TIFFs (`TSeries_*`, `file_*`, …) |
+| **clean_caiman** | `unregistered.h5`, `registered.h5`, rigid/nonrigid shift CSVs, `*_rigid.tif` / `*_nonrigid.tif`, `std_projection.tif` | Raw acquisition TIFFs (`TSeries_*`, `file_*`, …) |
 | **clean_fast** | `checkpoint/`, `inference.h5`, `_fast_complete`, `_run_config.json`, `_inference_config.json`, example `*_registered_*.tif`, scratch subdir named like the session folder, shared FAST log files under `fast/logs/` | Raw TIFFs / CaImAn H5s |
 | **clean_all** | Union of the above (one manifest) | Same |
 
@@ -281,7 +282,7 @@ The pipeline runs as a systemd user service — it survives display/GDM crashes.
 ## Per-folder flow
 
 For each selected folder:
-1. CaImAn: TIF stacks → `unregistered.h5` → motion correction → `registered.h5`
+1. CaImAn: TIF stacks → `unregistered.h5` → motion correction → `registered.h5` + `std_projection.tif` (STD of every 1000 motion-corrected frames; not written if motion correction is skipped)
 2. FAST: reads `registered.h5` → trains U-Net → inference → `inference.h5` + `_fast_complete`
 
 ## Why folders are skipped (and when)
