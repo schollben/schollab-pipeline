@@ -246,13 +246,14 @@ def tif_stacks_to_h5(tif_dir, h5_savename, h5_key='mov', delete_tiffs=False, fra
         f_out[h5_key][0:offset, :, :] = np.flip(first_frames, axis=0)
         write_end_ind += offset
 
-    for i in tqdm(range(len(tif_fnames) - 1), desc="Writing all but last stack...", ncols=75):
+    # Full-length stacks first; the last file is often shorter and is written below.
+    for i in tqdm(range(len(tif_fnames) - 1), desc="Writing TIFF stacks", ncols=75):
         this_stack_data = tifffile.imread(tif_fnames[i], is_ome=False)
         write_start_ind = write_end_ind
         write_end_ind = write_start_ind + stack_depth
         f_out[h5_key][write_start_ind:write_end_ind, :, :] = this_stack_data
 
-    # Write the last stack
+    # Last stack is included — handled separately only because its length may differ.
     last_stack = tifffile.imread(tif_fnames[-1], is_ome=False)
     write_start_ind = write_end_ind
 

@@ -170,11 +170,20 @@ def _try_write_std_projection(parent_dir, datafile, numframes):
 	or mark motion correction failed.
 	"""
 	try:
+		n_full = numframes // STD_WINDOW
+		remainder = numframes % STD_WINDOW
 		std_frames = []
-		for i in range(numframes // STD_WINDOW):
+		for i in range(n_full):
 			start = i * STD_WINDOW
 			chunk = np.array(datafile["mov"][start:start + STD_WINDOW, :, :])
 			std_frames.append(std_of_window(chunk))
+		# Remainder is already in registered.h5 from the original rewrite loop.
+		if remainder:
+			print(
+				f"  STD projection: {n_full} complete {STD_WINDOW}-frame windows; "
+				f"{remainder} leftover frames remain in registered.h5 "
+				"(not omitted from motion correction)."
+			)
 		write_std_projection_tiff(parent_dir, std_frames)
 	except Exception as exc:
 		print(

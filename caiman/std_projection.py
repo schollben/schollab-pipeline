@@ -39,8 +39,10 @@ def std_projection_stack(movie, window=STD_WINDOW):
 	"""
 	Stack of STD projections, one per complete window along axis 0.
 
-	Remainder frames (n % window) are dropped so every STD frame is exactly
-	`window` images, matching the requested 1000-frame projection.
+	Remainder frames (n % window) are dropped from this TIFF only so every
+	STD page is exactly `window` images. Those leftover frames are still
+	motion-corrected and stored in registered.h5 — this helper never truncates
+	the movie.
 	"""
 	movie = np.asarray(movie)
 	n_windows = movie.shape[0] // window
