@@ -193,10 +193,18 @@ class TestRegisterFolderSkipsUnregistered(unittest.TestCase):
 		self.assertFalse(reg._all_tiff_inputs(['a.h5']))
 		self.assertFalse(reg._all_tiff_inputs([]))
 
+	def test_as_path_list_wraps_string(self):
+		reg = self.reg
+		self.assertEqual(reg._as_path_list('/tmp/a.mmap'), ['/tmp/a.mmap'])
+		self.assertEqual(reg._as_path_list(['/tmp/a.mmap', '/tmp/b.mmap']),
+			['/tmp/a.mmap', '/tmp/b.mmap'])
+		self.assertEqual(reg._as_path_list([]), [])
+
 	def test_register_one_session_stages_tiffs_and_checks_count(self):
 		# Why: CaImAn workers must see non-OME copies, and registered.h5
-		# must be sized from the acquisition frame count, not a short mmap.
+		# must be sized from the acquisition frame count, not mmap[0] only.
 		reg = self.reg
+		mmaps = ['/tmp/mmap0', '/tmp/mmap1']
 		with tempfile.TemporaryDirectory() as tmp:
 			src = _touch(tmp, 'TSeries_Ch2_000001.ome.tif')
 			staged = [os.path.join(tmp, 'mc_0000.tif')]
@@ -205,13 +213,14 @@ class TestRegisterFolderSkipsUnregistered(unittest.TestCase):
 					mock.patch.object(reg, 'stage_plain_tiffs', return_value=staged) as stage, \
 					mock.patch.object(
 						reg, '_run_motion_correction',
-						return_value=(21973, ['/tmp/mmap']),
+						return_value=(21973, mmaps),
 					), \
 					mock.patch.object(reg, '_write_registered_h5') as write_h5, \
 					mock.patch.object(reg, '_cleanup_memmaps'), \
 					mock.patch.object(reg, '_cleanup_stage_dir') as cleanup:
 				reg.register_one_session(tmp, {}, False, False, '01_rigid.tif')
 			stage.assert_called_once()
+			self.assertEqual(write_h5.call_args[0][1], mmaps)
 			self.assertEqual(write_h5.call_args.kwargs.get('expected_frames'), 21973)
 			cleanup.assert_called_once()
 
