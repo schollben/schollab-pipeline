@@ -37,6 +37,7 @@ import math
 import h5py
 import glob
 import pathlib
+import shutil
 import subprocess
 import time
 import numpy as np
@@ -61,8 +62,11 @@ from registration_gui import get_registration_options
 from pipeline_job import apply_skip_caiman, want_unregistered_h5
 from pipeline_run_log import CAIMAN_STEP_LABELS
 from tif_to_h5 import (
+	count_tiff_frames,
 	list_acquisition_tiffs,
 	motion_correction_inputs,
+	require_matching_frame_count,
+	stage_plain_tiffs,
 	tif_stacks_to_h5,
 )
 from tiff_compat import tiff_writer_append
@@ -176,10 +180,21 @@ def _try_write_std_projection(parent_dir, datafile, numframes):
 		n_full = numframes // STD_WINDOW
 		remainder = numframes % STD_WINDOW
 		std_frames = []
+		n_zero = 0
 		for i in range(n_full):
 			start = i * STD_WINDOW
 			chunk = np.array(datafile["mov"][start:start + STD_WINDOW, :, :])
-			std_frames.append(std_of_window(chunk))
+			proj = std_of_window(chunk)
+			# Zero windows mean the H5 was padded; do not emit black STD pages.
+			if not np.any(proj):
+				n_zero += 1
+				continue
+			std_frames.append(proj)
+		if n_zero:
+			print(
+				f"  STD projection: skipped {n_zero} all-zero "
+				f"{STD_WINDOW}-frame window(s)"
+			)
 		# Remainder is already in registered.h5 from the original rewrite loop.
 		if remainder:
 			print(
@@ -195,41 +210,59 @@ def _try_write_std_projection(parent_dir, datafile, numframes):
 		)
 
 
-def _write_registered_h5(parent_dir, mmap_h5, numframes, save_sample, sample_name):
+def _load_mmap_movie(mmap_h5, numframes, expected_frames):
+	# Size H5 from mmap pixels, not shift count — shifts can outrun a short OME mmap.
+	mov = cm.load(mmap_h5)
+	n_mmap = int(mov.shape[0])
+	require_matching_frame_count(n_mmap, expected_frames)
+	if n_mmap != numframes:
+		print(
+			f"  WARNING: CaImAn shifts={numframes} frames, mmap={n_mmap}; "
+			"writing registered.h5 from mmap."
+		)
+	return mov, n_mmap
+
+
+def _copy_mmap_to_h5(datafile, mov, numframes):
+	frames_written = 0
+	for _ in range(math.floor(numframes / 1000)):
+		temp_data = np.array(mov[frames_written:frames_written + 1000, :, :])
+		actual_frames = temp_data.shape[0]
+		datafile["mov"][frames_written:frames_written + actual_frames, :, :] = temp_data
+		frames_written += actual_frames
+	if numframes > frames_written:
+		temp_data = np.array(mov[frames_written:mov.shape[0], :, :])
+		datafile["mov"][frames_written:mov.shape[0], :, :] = temp_data
+		frames_written = mov.shape[0]
+		del temp_data
+	return frames_written
+
+
+def _write_registered_h5(parent_dir, mmap_h5, numframes, save_sample, sample_name,
+		expected_frames=None):
 	# Write via a temp name then replace. Never os.replace the MC input —
 	# that is usually an acquisition TIFF, not unregistered.h5.
 	registered_h5 = os.path.join(parent_dir, 'registered.h5')
 	tmp_h5 = registered_h5 + '.tmp'
 	if os.path.isfile(tmp_h5):
 		os.remove(tmp_h5)
-	datafile = h5py.File(tmp_h5, 'w')
-	frames_written = 0
 	mov = None
+	datafile = None
 
 	try:
+		mov, numframes = _load_mmap_movie(mmap_h5, numframes, expected_frames)
+		datafile = h5py.File(tmp_h5, 'w')
 		datafile.create_dataset("mov", (numframes, 512, 512))
 		print(f"  Rewriting corrected H5: {registered_h5} ({numframes} frames)")
-		# Load the CaImAn mmap once; chunk slices avoid repeatedly reopening the same file.
-		mov = cm.load(mmap_h5)
-		for i in range(0, math.floor(numframes / 1000)):
-			temp_data = np.array(mov[frames_written:frames_written + 1000, :, :])
-			actual_frames = temp_data.shape[0]
-			datafile["mov"][frames_written:frames_written + actual_frames, :, :] = temp_data
-			frames_written += actual_frames
-
-		if numframes > frames_written:
-			temp_data = np.array(mov[frames_written:mov.shape[0], :, :])
-			datafile["mov"][frames_written:mov.shape[0], :, :] = temp_data
-			frames_written = mov.shape[0]
-			del temp_data
-
+		frames_written = _copy_mmap_to_h5(datafile, mov, numframes)
 		print(f"  Rewrote corrected H5 frames: {frames_written}")
 		_write_sample_tiff(parent_dir, sample_name, datafile, numframes, save_sample)
 		# Additive: STD TIFF only after existing MC artifacts are written.
 		_try_write_std_projection(parent_dir, datafile, numframes)
 	except Exception:
-		datafile.close()
-		datafile = None
+		if datafile is not None:
+			datafile.close()
+			datafile = None
 		if os.path.isfile(tmp_h5):
 			os.remove(tmp_h5)
 		raise
@@ -272,10 +305,43 @@ def _cleanup_memmaps(fnames_new, keep_memmap):
 				print(f"  WARNING: failed to remove memmap {fname}: {exc}")
 
 
+def _all_tiff_inputs(paths):
+	return bool(paths) and all(
+		p.lower().endswith(('.tif', '.tiff')) for p in paths
+	)
+
+
+def _mc_stage_dir(parent_dir):
+	base = os.path.join(os.path.expanduser('~'), 'caiman_data', 'temp')
+	name = os.path.basename(parent_dir.rstrip('/')) or 'session'
+	return os.path.join(base, f'mc_input_{name}')
+
+
+def _cleanup_stage_dir(stage_dir):
+	if not stage_dir or not os.path.isdir(stage_dir):
+		return
+	try:
+		shutil.rmtree(stage_dir)
+		print(f"  Removed staged MC TIFFs: {stage_dir}")
+	except OSError as exc:
+		print(f"  WARNING: failed to remove staged MC TIFFs {stage_dir}: {exc}")
+
+
 def register_one_session(parent_dir, mc_dict, keep_memmap, save_sample, sample_name):
 	# Acquisition TIFFs first. Do not require or consume unregistered.h5.
 	fnames = motion_correction_inputs(parent_dir)
 	print(f"  CaImAn input ({len(fnames)} path(s)): {os.path.basename(fnames[0])}")
+	expected_frames = None
+	stage_dir = None
+	# Workers load TIFFs themselves; strip OME linking so every stack is used.
+	if _all_tiff_inputs(fnames):
+		expected_frames = count_tiff_frames(fnames)
+		stage_dir = _mc_stage_dir(parent_dir)
+		print(
+			f"  Staging {len(fnames)} stacks ({expected_frames} frames) "
+			"as non-OME TIFFs for CaImAn..."
+		)
+		fnames = stage_plain_tiffs(fnames, stage_dir)
 	mc_dict['fnames'] = fnames
 	mc_dict['upsample_factor_grid'] = 8
 	opts = params.CNMFParams(params_dict=mc_dict)
@@ -283,10 +349,14 @@ def register_one_session(parent_dir, mc_dict, keep_memmap, save_sample, sample_n
 
 	try:
 		numframes, fnames_new = _run_motion_correction(parent_dir, fnames, opts, mc_dict)
-		_write_registered_h5(parent_dir, fnames_new[0], numframes, save_sample, sample_name)
+		_write_registered_h5(
+			parent_dir, fnames_new[0], numframes, save_sample, sample_name,
+			expected_frames=expected_frames,
+		)
 	finally:
 		# Memmaps are large temporary files; clean them even when H5/sample writing fails.
 		_cleanup_memmaps(fnames_new, keep_memmap)
+		_cleanup_stage_dir(stage_dir)
 
 
 def _h5_artifact_line(folder, filename):

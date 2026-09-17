@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import numpy as np
+
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_REPO_ROOT, 'caiman'))
 
@@ -16,7 +18,13 @@ sys.path.insert(0, os.path.join(_REPO_ROOT, 'caiman'))
 for _mod in ('tifffile', 'h5py', 'tqdm'):
 	sys.modules.setdefault(_mod, mock.MagicMock())
 
-from tif_to_h5 import list_acquisition_tiffs, motion_correction_inputs  # noqa: E402
+from tif_to_h5 import (  # noqa: E402
+	list_acquisition_tiffs,
+	motion_correction_inputs,
+	require_matching_frame_count,
+	count_tiff_frames,
+	stage_plain_tiffs,
+)
 
 
 def _touch(folder, name):
@@ -68,6 +76,57 @@ class TestMotionCorrectionInputs(unittest.TestCase):
 		with tempfile.TemporaryDirectory() as tmp:
 			with self.assertRaises(FileNotFoundError):
 				motion_correction_inputs(tmp)
+
+
+class TestRequireMatchingFrameCount(unittest.TestCase):
+	def test_allows_unknown_expected(self):
+		require_matching_frame_count(5000, None)
+
+	def test_allows_equal_counts(self):
+		require_matching_frame_count(21973, 21973)
+
+	def test_rejects_short_mmap(self):
+		with self.assertRaises(RuntimeError) as ctx:
+			require_matching_frame_count(5000, 21973)
+		self.assertIn('5000', str(ctx.exception))
+		self.assertIn('21973', str(ctx.exception))
+
+
+class TestCountTiffFrames(unittest.TestCase):
+	def test_sums_pages_without_ome_join(self):
+		import tif_to_h5 as mod
+
+		class FakeTif:
+			def __init__(self, n_pages):
+				self.pages = [None] * n_pages
+
+			def __enter__(self):
+				return self
+
+			def __exit__(self, *args):
+				return False
+
+		with mock.patch.object(
+			mod, '_tiff_file_no_ome',
+			side_effect=[FakeTif(1000), FakeTif(973)],
+		):
+			self.assertEqual(count_tiff_frames(['a.ome.tif', 'b.ome.tif']), 1973)
+
+
+class TestStagePlainTiffs(unittest.TestCase):
+	def test_writes_numbered_non_ome_names(self):
+		import tif_to_h5 as mod
+		with tempfile.TemporaryDirectory() as tmp:
+			src = os.path.join(tmp, 'TSeries_Ch2_000001.ome.tif')
+			open(src, 'w').close()
+			dest_dir = os.path.join(tmp, 'stage')
+			fake = np.zeros((2, 4, 4), dtype=np.uint16)
+			with mock.patch.object(mod, '_imread_no_ome', return_value=fake), \
+					mock.patch.object(mod.tifffile, 'imwrite') as imwrite:
+				out = stage_plain_tiffs([src], dest_dir)
+			self.assertEqual([os.path.basename(p) for p in out], ['mc_0000.tif'])
+			imwrite.assert_called_once()
+			self.assertEqual(imwrite.call_args[0][0], out[0])
 
 
 class TestRegisterFolderSkipsUnregistered(unittest.TestCase):
@@ -127,6 +186,34 @@ class TestRegisterFolderSkipsUnregistered(unittest.TestCase):
 			mc.assert_called_once()
 			skipped = [s for s in summary['steps'] if s['name'] == 'TIFs→H5']
 			self.assertEqual(skipped[0]['status'], 'skipped')
+
+	def test_all_tiff_inputs(self):
+		reg = self.reg
+		self.assertTrue(reg._all_tiff_inputs(['a.tif', 'b.ome.tif']))
+		self.assertFalse(reg._all_tiff_inputs(['a.h5']))
+		self.assertFalse(reg._all_tiff_inputs([]))
+
+	def test_register_one_session_stages_tiffs_and_checks_count(self):
+		# Why: CaImAn workers must see non-OME copies, and registered.h5
+		# must be sized from the acquisition frame count, not a short mmap.
+		reg = self.reg
+		with tempfile.TemporaryDirectory() as tmp:
+			src = _touch(tmp, 'TSeries_Ch2_000001.ome.tif')
+			staged = [os.path.join(tmp, 'mc_0000.tif')]
+			with mock.patch.object(reg, 'motion_correction_inputs', return_value=[src]), \
+					mock.patch.object(reg, 'count_tiff_frames', return_value=21973), \
+					mock.patch.object(reg, 'stage_plain_tiffs', return_value=staged) as stage, \
+					mock.patch.object(
+						reg, '_run_motion_correction',
+						return_value=(21973, ['/tmp/mmap']),
+					), \
+					mock.patch.object(reg, '_write_registered_h5') as write_h5, \
+					mock.patch.object(reg, '_cleanup_memmaps'), \
+					mock.patch.object(reg, '_cleanup_stage_dir') as cleanup:
+				reg.register_one_session(tmp, {}, False, False, '01_rigid.tif')
+			stage.assert_called_once()
+			self.assertEqual(write_h5.call_args.kwargs.get('expected_frames'), 21973)
+			cleanup.assert_called_once()
 
 	def test_tifs_to_h5_only_writes_unregistered(self):
 		reg = self.reg

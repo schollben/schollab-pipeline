@@ -81,6 +81,70 @@ def list_acquisition_tiffs(tif_dir, channel='Ch2'):
     return tif_fnames
 
 
+def _tiff_file_no_ome(path):
+    """Open a TIFF as this file only — do not join Bruker OME companion stacks."""
+    try:
+        return tifffile.TiffFile(path, is_ome=False)
+    except TypeError:
+        return tifffile.TiffFile(path)
+
+
+def _imread_no_ome(path):
+    try:
+        return tifffile.imread(path, is_ome=False)
+    except TypeError:
+        return tifffile.imread(path)
+
+
+def count_tiff_frames(paths):
+    """Sum pages in each file with OME series linking off."""
+    n = 0
+    for p in paths:
+        with _tiff_file_no_ome(p) as t:
+            n += len(t.pages)
+    return n
+
+
+def stage_plain_tiffs(src_paths, dest_dir):
+    """
+    Copy each stack to a non-OME TIFF.
+
+    Why: CaImAn workers call tifffile without is_ome=False. Bruker .ome.tif
+    companions then load as one short series (~5 stacks) while we size
+    registered.h5 from the full shift count and pad the rest with zeros.
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    out = []
+    for i, src in enumerate(src_paths):
+        dest = os.path.join(dest_dir, f'mc_{i:04d}.tif')
+        data = np.asarray(_imread_no_ome(src))
+        # ome=False so CaImAn workers cannot re-join companions by XML.
+        try:
+            tifffile.imwrite(
+                dest, data, photometric='minisblack', ome=False, metadata=None,
+            )
+        except TypeError:
+            tifffile.imwrite(dest, data, photometric='minisblack', metadata=None)
+        out.append(dest)
+        print(
+            f"  Staged plain TIFF [{i + 1}/{len(src_paths)}]: "
+            f"{os.path.basename(src)} -> {os.path.basename(dest)}"
+        )
+    return out
+
+
+def require_matching_frame_count(n_mmap, expected_frames):
+    """Refuse a short mmap so we never write a zero-padded registered.h5."""
+    if expected_frames is None:
+        return
+    if n_mmap != expected_frames:
+        raise RuntimeError(
+            f"Motion-corrected mmap has {n_mmap} frames, "
+            f"acquisition TIFFs have {expected_frames}. "
+            "Refusing to write a zero-padded registered.h5."
+        )
+
+
 def motion_correction_inputs(parent_dir, channel='Ch2'):
     """
     Inputs for CaImAn MotionCorrect: acquisition TIFFs first, then existing H5.
