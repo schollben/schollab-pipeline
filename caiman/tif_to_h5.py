@@ -5,6 +5,7 @@ import tifffile
 import numpy as np
 import h5py
 from tqdm import tqdm
+from std_projection import is_pipeline_artifact_tif
 
 
 def _scanimage_tiffs_one_cycle(paths, cycle_re):
@@ -32,17 +33,18 @@ def _acquisition_tif_paths(sorted_paths):
     """
     Select TIFFs that belong to the recording, not CaImAn preview exports.
 
-    Why: sample movies (01_rigid.tif, …) sort before ScanImage stacks (file_* /
-    TSeries_*) and break depth checks. Prefer one homogeneous naming series.
+    Why: sample movies (01_rigid.tif, …) and std_projection.tif sort before
+    ScanImage stacks (file_* / TSeries_*) and break depth checks. Prefer one
+    homogeneous naming series.
     """
     out = []
     for f in sorted_paths:
-        b = os.path.basename(f)
-        if b.endswith('_rigid.tif') or b.endswith('_nonrigid.tif'):
+        if is_pipeline_artifact_tif(f):
             continue
         out.append(f)
     assert len(out) > 0, (
-        "No acquisition TIFFs left after excluding *_rigid.tif / *_nonrigid.tif — "
+        "No acquisition TIFFs left after excluding CaImAn artifacts "
+        "(*_rigid.tif, *_nonrigid.tif, std_projection.tif) — "
         "folder may contain only CaImAn sample exports."
     )
     tseries = [f for f in out if os.path.basename(f).startswith('TSeries_')]
@@ -52,6 +54,116 @@ def _acquisition_tif_paths(sorted_paths):
     if len(file_pref) > 0:
         return _scanimage_tiffs_one_cycle(file_pref, re.compile(r'^file_(\d+)_'))
     return out
+
+
+def list_acquisition_tiffs(tif_dir, channel='Ch2'):
+    """
+    TIFF paths tif_stacks_to_h5 would write — same Ch2 / artifact filter.
+
+    Returns [] when the folder has no matching acquisition files so motion
+    correction can fall back to an existing H5 instead of asserting.
+    """
+    all_tifs = [
+        f for f in sorted(glob(os.path.join(tif_dir, "*.tif")))
+        if 'References' not in f
+    ]
+    if not any(not is_pipeline_artifact_tif(f) for f in all_tifs):
+        return []
+    all_tifs = _acquisition_tif_paths(all_tifs)
+    if channel is not None:
+        has_channel_token = any('Ch' in os.path.basename(f) for f in all_tifs)
+        if has_channel_token:
+            tif_fnames = [f for f in all_tifs if f'_{channel}_' in os.path.basename(f)]
+        else:
+            tif_fnames = all_tifs
+    else:
+        tif_fnames = all_tifs
+    return tif_fnames
+
+
+def _tiff_file_no_ome(path):
+    """Open a TIFF as this file only — do not join Bruker OME companion stacks."""
+    try:
+        return tifffile.TiffFile(path, is_ome=False)
+    except TypeError:
+        return tifffile.TiffFile(path)
+
+
+def _imread_no_ome(path):
+    try:
+        return tifffile.imread(path, is_ome=False)
+    except TypeError:
+        return tifffile.imread(path)
+
+
+def count_tiff_frames(paths):
+    """Sum pages in each file with OME series linking off."""
+    n = 0
+    for p in paths:
+        with _tiff_file_no_ome(p) as t:
+            n += len(t.pages)
+    return n
+
+
+def stage_plain_tiffs(src_paths, dest_dir):
+    """
+    Copy each stack to a non-OME TIFF.
+
+    Why: CaImAn workers call tifffile without is_ome=False. Bruker .ome.tif
+    companions then load as one short series (~5 stacks) while we size
+    registered.h5 from the full shift count and pad the rest with zeros.
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    out = []
+    for i, src in enumerate(src_paths):
+        dest = os.path.join(dest_dir, f'mc_{i:04d}.tif')
+        data = np.asarray(_imread_no_ome(src))
+        # ome=False so CaImAn workers cannot re-join companions by XML.
+        try:
+            tifffile.imwrite(
+                dest, data, photometric='minisblack', ome=False, metadata=None,
+            )
+        except TypeError:
+            tifffile.imwrite(dest, data, photometric='minisblack', metadata=None)
+        out.append(dest)
+        print(
+            f"  Staged plain TIFF [{i + 1}/{len(src_paths)}]: "
+            f"{os.path.basename(src)} -> {os.path.basename(dest)}"
+        )
+    return out
+
+
+def require_matching_frame_count(n_mmap, expected_frames):
+    """Refuse a short mmap so we never write a zero-padded registered.h5."""
+    if expected_frames is None:
+        return
+    if n_mmap != expected_frames:
+        raise RuntimeError(
+            f"Motion-corrected mmap has {n_mmap} frames, "
+            f"acquisition TIFFs have {expected_frames}. "
+            "Refusing to write a zero-padded registered.h5."
+        )
+
+
+def motion_correction_inputs(parent_dir, channel='Ch2'):
+    """
+    Inputs for CaImAn MotionCorrect: acquisition TIFFs first, then existing H5.
+
+    Why TIFFs first: unregistered.h5 is opt-in and is not written on MC runs.
+    H5 fallback is only for folders whose TIFFs were already removed.
+    """
+    tiffs = list_acquisition_tiffs(parent_dir, channel=channel)
+    if tiffs:
+        return tiffs
+    unreg = os.path.join(parent_dir, 'unregistered.h5')
+    if os.path.isfile(unreg):
+        return [unreg]
+    reg = os.path.join(parent_dir, 'registered.h5')
+    if os.path.isfile(reg):
+        return [reg]
+    raise FileNotFoundError(
+        f"No acquisition TIFFs or registered.h5 in {parent_dir}."
+    )
 
 
 def tif_stacks_to_h5(tif_dir, h5_savename, h5_key='mov', delete_tiffs=False, frame_offset=False, offset=30, channel='Ch2'):
@@ -73,16 +185,7 @@ def tif_stacks_to_h5(tif_dir, h5_savename, h5_key='mov', delete_tiffs=False, fra
         Returns:
             None - Writes .h5 file to disk at 'h5_savename' containing calcium movie data.
     '''
-    all_tifs = sorted(glob(os.path.join(tif_dir, "*.tif")))
-    all_tifs = _acquisition_tif_paths(all_tifs)
-    if channel is not None:
-        has_channel_token = any('Ch' in os.path.basename(f) for f in all_tifs)
-        if has_channel_token:
-            tif_fnames = [f for f in all_tifs if f'_{channel}_' in os.path.basename(f)]
-        else:
-            tif_fnames = all_tifs
-    else:
-        tif_fnames = all_tifs
+    tif_fnames = list_acquisition_tiffs(tif_dir, channel=channel)
     assert len(tif_fnames) > 0, f"No TIF files found in {tif_dir}" + (f" for channel '{channel}'" if channel else "") + "."
     print(f"\nFound {len(tif_fnames)} TIFF stacks to write ({channel or 'all channels'}):")
     for f in tif_fnames:
@@ -157,14 +260,15 @@ def tif_stacks_to_h5(tif_dir, h5_savename, h5_key='mov', delete_tiffs=False, fra
         f_out[h5_key][0:offset, :, :] = np.flip(first_frames, axis=0)
         write_end_ind += offset
 
-    for i in tqdm(range(len(tif_fnames) - 1), desc="Writing all but last stack...", ncols=75):
+    # Full-length stacks first; the last file is often shorter and is written below.
+    for i in tqdm(range(len(tif_fnames) - 1), desc="Writing TIFF stacks", ncols=75):
         print(f"  Writing [{i+1}/{len(tif_fnames)}]: {os.path.basename(tif_fnames[i])}")
         this_stack_data = tifffile.imread(tif_fnames[i], is_ome=False)
         write_start_ind = write_end_ind
         write_end_ind = write_start_ind + stack_depth
         f_out[h5_key][write_start_ind:write_end_ind, :, :] = this_stack_data
 
-    # Write the last stack
+    # Last stack is included — handled separately only because its length may differ.
     last_stack = tifffile.imread(tif_fnames[-1], is_ome=False)
     write_start_ind = write_end_ind
 

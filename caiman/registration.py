@@ -33,10 +33,10 @@ for _thread_env, _thread_default in CAIMAN_CONFIG.get('threads', {}).items():
 	os.environ.setdefault(_thread_env, str(_thread_default))
 
 import cv2
-import math
 import h5py
 import glob
 import pathlib
+import shutil
 import subprocess
 import time
 import numpy as np
@@ -58,10 +58,23 @@ import tifffile
 
 # Import from renamed modules in the same caiman/ directory
 from registration_gui import get_registration_options
-from pipeline_job import apply_skip_caiman
+from pipeline_job import apply_skip_caiman, want_unregistered_h5
 from pipeline_run_log import CAIMAN_STEP_LABELS
-from tif_to_h5 import tif_stacks_to_h5
+from tif_to_h5 import (
+	count_tiff_frames,
+	list_acquisition_tiffs,
+	motion_correction_inputs,
+	require_matching_frame_count,
+	stage_plain_tiffs,
+	tif_stacks_to_h5,
+)
 from tiff_compat import tiff_writer_append
+from std_projection import (
+	STD_TIFF_NAME,
+	STD_WINDOW,
+	std_of_window,
+	write_std_projection_tiff,
+)
 
 global mc
 
@@ -145,48 +158,145 @@ def _save_motion_outputs(parent_dir, mc, mc_dict):
 		numframes = len(mc.shifts_rig)
 		np.savetxt(os.path.join(parent_dir, 'rigid_shifts.csv'), mc.shifts_rig, delimiter=',')
 
-	fnames_new = mc.mmap_file
+	# One mmap per input stack — do not keep only [0] or registered.h5 is truncated.
+	fnames_new = _as_path_list(mc.mmap_file)
 	if not fnames_new:
 		raise RuntimeError(
 			"Motion correction returned no memmap paths (mc.mmap_file empty). "
 			"Check CaImAn version, input shape, and disk space."
 		)
-	print(f"  CaImAn memmap output: {fnames_new[0]}")
+	print(
+		f"  CaImAn memmap output ({len(fnames_new)} file(s)): "
+		f"{os.path.basename(fnames_new[0])}"
+	)
 	return numframes, fnames_new
 
 
-def _write_registered_h5(parent_dir, source_h5, mmap_h5, numframes, save_sample, sample_name):
-	# Rename unregistered.h5 -> registered.h5 before writing corrected frames.
+def _try_write_std_projection(parent_dir, datafile, numframes):
+	"""
+	Write std_projection.tif after registered.h5 / sample TIFF already exist.
+
+	Why best-effort: STD is additive. A write failure must not skip 01_rigid.tif
+	or mark motion correction failed.
+	"""
+	try:
+		n_full = numframes // STD_WINDOW
+		remainder = numframes % STD_WINDOW
+		std_frames = []
+		n_zero = 0
+		for i in range(n_full):
+			start = i * STD_WINDOW
+			chunk = np.array(datafile["mov"][start:start + STD_WINDOW, :, :])
+			proj = std_of_window(chunk)
+			# Zero windows mean the H5 was padded; do not emit black STD pages.
+			if not np.any(proj):
+				n_zero += 1
+				continue
+			std_frames.append(proj)
+		if n_zero:
+			print(
+				f"  STD projection: skipped {n_zero} all-zero "
+				f"{STD_WINDOW}-frame window(s)"
+			)
+		# Remainder is already in registered.h5 from the original rewrite loop.
+		if remainder:
+			print(
+				f"  STD projection: {n_full} complete {STD_WINDOW}-frame windows; "
+				f"{remainder} leftover frames remain in registered.h5 "
+				"(not omitted from motion correction)."
+			)
+		write_std_projection_tiff(parent_dir, std_frames)
+	except Exception as exc:
+		print(
+			f"  WARNING: STD projection TIFF failed; "
+			f"registered.h5 and sample TIFF kept: {exc}"
+		)
+
+
+def _as_path_list(paths):
+	if not paths:
+		return []
+	if isinstance(paths, (str, bytes)):
+		return [paths]
+	return list(paths)
+
+
+def _create_mov_dataset(datafile, expected_frames):
+	if expected_frames is not None:
+		datafile.create_dataset("mov", (expected_frames, 512, 512))
+		return
+	# Unknown length (H5-only input): grow as each CaImAn mmap is copied.
+	datafile.create_dataset("mov", (0, 512, 512), maxshape=(None, 512, 512))
+
+
+def _copy_one_mmap(datafile, mmap_path, dest_start, expected_frames):
+	# Load one stack mmap at a time — all 22k frames at once would be tens of GB.
+	mov = cm.load(mmap_path)
+	try:
+		n = int(mov.shape[0])
+		if expected_frames is None:
+			datafile["mov"].resize(dest_start + n, axis=0)
+		print(f"  Copying mmap ({n} frames): {os.path.basename(mmap_path)}")
+		written = 0
+		while written < n:
+			step = min(1000, n - written)
+			temp = np.array(mov[written:written + step, :, :])
+			lo = dest_start + written
+			datafile["mov"][lo:lo + temp.shape[0], :, :] = temp
+			written += temp.shape[0]
+			del temp
+		return n
+	finally:
+		del mov
+
+
+def _write_registered_h5(parent_dir, mmap_paths, numframes, save_sample, sample_name,
+		expected_frames=None):
+	# Write via a temp name then replace. Never os.replace the MC input —
+	# that is usually an acquisition TIFF, not unregistered.h5.
+	mmap_paths = _as_path_list(mmap_paths)
+	if not mmap_paths:
+		raise RuntimeError("Motion correction returned no memmap paths.")
 	registered_h5 = os.path.join(parent_dir, 'registered.h5')
-	os.replace(source_h5, registered_h5)
-	datafile = h5py.File(registered_h5, 'w')
-	frames_written = 0
-	mov = None
+	tmp_h5 = registered_h5 + '.tmp'
+	if os.path.isfile(tmp_h5):
+		os.remove(tmp_h5)
+	datafile = None
 
 	try:
-		datafile.create_dataset("mov", (numframes, 512, 512))
-		print(f"  Rewriting corrected H5: {registered_h5} ({numframes} frames)")
-		# Load the CaImAn mmap once; chunk slices avoid repeatedly reopening the same file.
-		mov = cm.load(mmap_h5)
-		for i in range(0, math.floor(numframes / 1000)):
-			temp_data = np.array(mov[frames_written:frames_written + 1000, :, :])
-			actual_frames = temp_data.shape[0]
-			datafile["mov"][frames_written:frames_written + actual_frames, :, :] = temp_data
-			frames_written += actual_frames
-
-		if numframes > frames_written:
-			temp_data = np.array(mov[frames_written:mov.shape[0], :, :])
-			datafile["mov"][frames_written:mov.shape[0], :, :] = temp_data
-			frames_written = mov.shape[0]
-			del temp_data
-
-		print(f"  Rewrote corrected H5 frames: {frames_written}")
-		_write_sample_tiff(parent_dir, sample_name, datafile, numframes, save_sample)
+		datafile = h5py.File(tmp_h5, 'w')
+		_create_mov_dataset(datafile, expected_frames)
+		print(
+			f"  Rewriting corrected H5: {registered_h5} "
+			f"from {len(mmap_paths)} memmap(s)"
+		)
+		offset = 0
+		for path in mmap_paths:
+			offset += _copy_one_mmap(datafile, path, offset, expected_frames)
+		# Size from concatenated mmap pixels, not shift count or mmap[0] only.
+		require_matching_frame_count(offset, expected_frames)
+		if offset != numframes:
+			print(
+				f"  WARNING: CaImAn shifts={numframes} frames, "
+				f"memmaps={offset}; writing registered.h5 from memmaps."
+			)
+		print(f"  Rewrote corrected H5 frames: {offset}")
+		_write_sample_tiff(parent_dir, sample_name, datafile, offset, save_sample)
+		# Additive: STD TIFF only after existing MC artifacts are written.
+		_try_write_std_projection(parent_dir, datafile, offset)
+	except Exception:
+		if datafile is not None:
+			datafile.close()
+			datafile = None
+		if os.path.isfile(tmp_h5):
+			os.remove(tmp_h5)
+		raise
 	finally:
-		if mov is not None:
-			del mov
-		datafile.close()
-		print(f"  Closed H5 file: {registered_h5}")
+		if datafile is not None:
+			datafile.close()
+			print(f"  Closed H5 file: {registered_h5}")
+
+	os.replace(tmp_h5, registered_h5)
 
 
 def _write_sample_tiff(parent_dir, sample_name, datafile, numframes, save_sample):
@@ -205,6 +315,7 @@ def _write_sample_tiff(parent_dir, sample_name, datafile, numframes, save_sample
 
 
 def _cleanup_memmaps(fnames_new, keep_memmap):
+	fnames_new = _as_path_list(fnames_new)
 	if keep_memmap or not fnames_new:
 		return
 
@@ -218,18 +329,43 @@ def _cleanup_memmaps(fnames_new, keep_memmap):
 				print(f"  WARNING: failed to remove memmap {fname}: {exc}")
 
 
+def _all_tiff_inputs(paths):
+	return bool(paths) and all(
+		p.lower().endswith(('.tif', '.tiff')) for p in paths
+	)
+
+
+def _mc_stage_dir(parent_dir):
+	base = os.path.join(os.path.expanduser('~'), 'caiman_data', 'temp')
+	name = os.path.basename(parent_dir.rstrip('/')) or 'session'
+	return os.path.join(base, f'mc_input_{name}')
+
+
+def _cleanup_stage_dir(stage_dir):
+	if not stage_dir or not os.path.isdir(stage_dir):
+		return
+	try:
+		shutil.rmtree(stage_dir)
+		print(f"  Removed staged MC TIFFs: {stage_dir}")
+	except OSError as exc:
+		print(f"  WARNING: failed to remove staged MC TIFFs {stage_dir}: {exc}")
+
+
 def register_one_session(parent_dir, mc_dict, keep_memmap, save_sample, sample_name):
-	# Prefer unregistered.h5 — glob *registered.h5 sorts registered.h5 before unregistered.h5
-	# and would run motion correction on the wrong file when both exist.
-	unreg = os.path.join(parent_dir, 'unregistered.h5')
-	if os.path.isfile(unreg):
-		fnames = [unreg]
-	else:
-		fnames = sorted(glob.glob(os.path.join(parent_dir, "*registered.h5")))
-	if not fnames:
-		raise FileNotFoundError(
-			f"No *registered.h5 input in {parent_dir} (expected unregistered.h5 for a fresh run)."
+	# Acquisition TIFFs first. Do not require or consume unregistered.h5.
+	fnames = motion_correction_inputs(parent_dir)
+	print(f"  CaImAn input ({len(fnames)} path(s)): {os.path.basename(fnames[0])}")
+	expected_frames = None
+	stage_dir = None
+	# Workers load TIFFs themselves; strip OME linking so every stack is used.
+	if _all_tiff_inputs(fnames):
+		expected_frames = count_tiff_frames(fnames)
+		stage_dir = _mc_stage_dir(parent_dir)
+		print(
+			f"  Staging {len(fnames)} stacks ({expected_frames} frames) "
+			"as non-OME TIFFs for CaImAn..."
 		)
+		fnames = stage_plain_tiffs(fnames, stage_dir)
 	mc_dict['fnames'] = fnames
 	mc_dict['upsample_factor_grid'] = 8
 	opts = params.CNMFParams(params_dict=mc_dict)
@@ -237,10 +373,14 @@ def register_one_session(parent_dir, mc_dict, keep_memmap, save_sample, sample_n
 
 	try:
 		numframes, fnames_new = _run_motion_correction(parent_dir, fnames, opts, mc_dict)
-		_write_registered_h5(parent_dir, fnames[0], fnames_new[0], numframes, save_sample, sample_name)
+		_write_registered_h5(
+			parent_dir, fnames_new, numframes, save_sample, sample_name,
+			expected_frames=expected_frames,
+		)
 	finally:
 		# Memmaps are large temporary files; clean them even when H5/sample writing fails.
 		_cleanup_memmaps(fnames_new, keep_memmap)
+		_cleanup_stage_dir(stage_dir)
 
 
 def _h5_artifact_line(folder, filename):
@@ -253,11 +393,14 @@ def _h5_artifact_line(folder, filename):
 
 
 def _sample_tif_artifacts(folder):
-	"""List rigid/nonrigid sample TIFFs produced by motion correction."""
+	"""List rigid/nonrigid sample TIFFs and STD projection from motion correction."""
 	arts = []
 	for pattern in ('*_rigid.tif', '*_nonrigid.tif'):
 		for path in sorted(glob.glob(os.path.join(folder, pattern))):
 			arts.append(os.path.basename(path))
+	std_path = os.path.join(folder, STD_TIFF_NAME)
+	if os.path.isfile(std_path):
+		arts.append(STD_TIFF_NAME)
 	return arts
 
 
@@ -298,70 +441,59 @@ def _finalize_caiman_summary(folder, steps, row):
 	}
 
 
-def _register_one_folder(folder, row, mc_dict):
-	"""
-	Run CaImAn steps for one folder; return summary dict for pipeline run log.
+def _delete_stale_h5(folder):
+	for name in ('unregistered.h5', 'registered.h5'):
+		path = os.path.join(folder, name)
+		if os.path.exists(path):
+			os.remove(path)
+			print(f"Deleted stale file: {path}")
 
-	Does not raise on step failure — caller checks summary['result'].
-	"""
-	steps = []
+
+def _try_write_unregistered_h5(folder, steps):
+	"""Opt-in TIFs→H5 with no motion step. Returns False if the write failed."""
+	t0 = time.perf_counter()
+	if not list_acquisition_tiffs(folder):
+		print(f"WARNING: No source TIFs found in {folder}")
+		print(f"  Skipping TIFs→H5 step — registered.h5 left untouched.")
+		steps.append({
+			'name': CAIMAN_STEP_LABELS[0],
+			'status': 'skipped',
+			'duration_s': round(time.perf_counter() - t0, 1),
+			'detail': 'no source TIFs',
+		})
+		return True
+	try:
+		_delete_stale_h5(folder)
+		h5_name = os.path.join(folder, 'unregistered.h5')
+		tif_stacks_to_h5(folder, h5_name, frame_offset=False)
+		art = _h5_artifact_line(folder, 'unregistered.h5')
+		steps.append({
+			'name': CAIMAN_STEP_LABELS[0],
+			'status': 'ok',
+			'duration_s': round(time.perf_counter() - t0, 1),
+			'artifacts_line': art or 'unregistered.h5',
+		})
+		return True
+	except Exception as exc:
+		steps.append({
+			'name': CAIMAN_STEP_LABELS[0],
+			'status': 'failed',
+			'duration_s': round(time.perf_counter() - t0, 1),
+			'error': str(exc),
+		})
+		return False
+
+
+def _run_motion_steps(folder, row, mc_dict, steps):
+	"""Run selected rigid/NoRMCorre steps. Returns False on the first failure."""
 	n_procs = 0
-	print(folder)
-
-	if row[0]:
-		t0 = time.perf_counter()
-		source_tifs = []
-		for f in glob.glob(os.path.join(folder, "*.tif")):
-			if 'References' in f:
-				continue
-			b = os.path.basename(f)
-			if b.endswith('_rigid.tif') or b.endswith('_nonrigid.tif'):
-				continue
-			source_tifs.append(f)
-		if not source_tifs:
-			print(f"WARNING: No source TIFs found in {folder}")
-			print(f"  Skipping TIFs→H5 step — registered.h5 left untouched.")
-			steps.append({
-				'name': CAIMAN_STEP_LABELS[0],
-				'status': 'skipped',
-				'duration_s': round(time.perf_counter() - t0, 1),
-				'detail': 'no source TIFs',
-			})
-		else:
-			try:
-				for stale_h5 in ['unregistered.h5', 'registered.h5']:
-					stale_path = os.path.join(folder, stale_h5)
-					if os.path.exists(stale_path):
-						os.remove(stale_path)
-						print(f"Deleted stale file: {stale_path}")
-				h5_name = os.path.join(folder, 'unregistered.h5')
-				tif_stacks_to_h5(folder, h5_name, frame_offset=False)
-				art = _h5_artifact_line(folder, 'unregistered.h5')
-				steps.append({
-					'name': CAIMAN_STEP_LABELS[0],
-					'status': 'ok',
-					'duration_s': round(time.perf_counter() - t0, 1),
-					'artifacts_line': art or 'unregistered.h5',
-				})
-			except Exception as exc:
-				steps.append({
-					'name': CAIMAN_STEP_LABELS[0],
-					'status': 'failed',
-					'duration_s': round(time.perf_counter() - t0, 1),
-					'error': str(exc),
-				})
-				return _finalize_caiman_summary(folder, steps, row)
-
 	for step_idx, sample_suffix in ((1, 'rigid'), (2, 'rigid'), (3, 'nonrigid')):
 		if not row[step_idx]:
 			continue
 		label = CAIMAN_STEP_LABELS[step_idx]
 		t0 = time.perf_counter()
 		try:
-			if step_idx == 3:
-				mc_dict['pw_rigid'] = True
-			else:
-				mc_dict['pw_rigid'] = False
+			mc_dict['pw_rigid'] = step_idx == 3
 			n_procs += 1
 			register_one_session(
 				folder, mc_dict, keep_memmap=False,
@@ -382,9 +514,39 @@ def _register_one_folder(folder, row, mc_dict):
 				'error': str(exc),
 				'detail': '(no registered.h5)',
 			})
+			return False
+	return True
+
+
+def _register_one_folder(folder, row, mc_dict):
+	"""
+	Run CaImAn steps for one folder; return summary dict for pipeline run log.
+
+	Does not raise on step failure — caller checks summary['result'].
+	"""
+	steps = []
+	print(folder)
+
+	# MC never writes unregistered.h5, even if TIFs→H5 is also checked.
+	if row[0] and any(row[1:4]):
+		print(
+			"  TIFs→H5 ignored — motion correction reads acquisition TIFFs; "
+			"unregistered.h5 is not written."
+		)
+		steps.append({
+			'name': CAIMAN_STEP_LABELS[0],
+			'status': 'skipped',
+			'duration_s': 0.0,
+			'detail': 'MC reads TIFFs; unregistered.h5 not written',
+		})
+	elif want_unregistered_h5(row):
+		if not _try_write_unregistered_h5(folder, steps):
 			return _finalize_caiman_summary(folder, steps, row)
 
-	if row[0] and not any(row[1:4]):
+	if not _run_motion_steps(folder, row, mc_dict, steps):
+		return _finalize_caiman_summary(folder, steps, row)
+
+	if want_unregistered_h5(row):
 		unreg = os.path.join(folder, 'unregistered.h5')
 		reg = os.path.join(folder, 'registered.h5')
 		if os.path.isfile(unreg) and not os.path.isfile(reg):
@@ -398,12 +560,13 @@ def _register_one_folder(folder, row, mc_dict):
 
 def register_bulk(sessions_to_run, process_selections):
 	"""
-	Run CaImAn motion correction on prepared .h5 stacks.
+	Run CaImAn motion correction on acquisition TIFFs (or existing H5 fallback).
 
 	Parameters:
 		sessions_to_run (list): Directory paths to find data in.
 		process_selections (np.array): 4×N bool array — rows are:
 			[TIFs→H5, first rigid, additional rigid, NoRMCorre]
+		TIFs→H5 writes unregistered.h5 only when no motion step is selected.
 
 	Returns:
 		list[dict]: per-folder summary for pipeline run log (one entry per session).

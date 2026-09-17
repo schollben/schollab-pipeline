@@ -27,6 +27,7 @@ from pipeline_launcher import (  # noqa: E402
 	DEFER_MINUTES,
 	WORKER_SCRIPT,
 	defer_scheduled_job,
+	glibc_tunables_for_caiman,
 )
 
 
@@ -88,6 +89,8 @@ def main():
 			f.write(unit_name)
 
 		env = os.environ.copy()
+		# Child worker must see this at exec; dispatcher itself does not import TF.
+		env['GLIBC_TUNABLES'] = glibc_tunables_for_caiman(env.get('GLIBC_TUNABLES', ''))
 		if verbose_log:
 			os.makedirs(os.path.dirname(verbose_log), exist_ok=True)
 			_log_batch_header(job_path, verbose_log)

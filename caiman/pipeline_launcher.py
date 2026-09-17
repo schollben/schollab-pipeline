@@ -68,12 +68,30 @@ def _fast_path_setenv_args():
 	return args
 
 
+# glibc 2.41+ refuses TensorFlow libs that request an executable stack
+# (libtensorflow_framework.so.2: "cannot enable executable stack").
+# The linker reads GLIBC_TUNABLES at process start — too late to set in Python.
+GLIBC_EXECSTACK_TUNABLE = 'glibc.rtld.execstack=2'
+
+
+def glibc_tunables_for_caiman(existing=None):
+	"""Keep any existing tunables; add execstack=2 if missing (TF import on new glibc)."""
+	if existing is None:
+		existing = os.environ.get('GLIBC_TUNABLES', '')
+	if 'glibc.rtld.execstack=' in existing:
+		return existing
+	if existing:
+		return f'{existing}:{GLIBC_EXECSTACK_TUNABLE}'
+	return GLIBC_EXECSTACK_TUNABLE
+
+
 def _systemd_run_base_env():
 	cmd = [
 		'systemd-run', '--user',
 		'--collect',
 		f"--setenv=HOME={os.path.expanduser('~')}",
 		f"--setenv=SCHOLLAB_CONDA_ROOT={_schollab_conda_root()}",
+		f"--setenv=GLIBC_TUNABLES={glibc_tunables_for_caiman()}",
 	]
 	cmd.extend(_caiman_thread_setenv_args())
 	cmd.extend(_fast_path_setenv_args())
@@ -169,6 +187,7 @@ Description=Schollab scheduled batch {batch_id}
 Type=oneshot
 Environment=SCHOLLAB_BATCH_JOB_PATH={job_path}
 Environment=SCHOLLAB_CONDA_ROOT={_schollab_conda_root()}
+Environment=GLIBC_TUNABLES={glibc_tunables_for_caiman()}
 ExecStart={CAIMAN_PYTHON} {DISPATCHER_SCRIPT} {job_path}
 """
 	timer_text = f"""[Unit]

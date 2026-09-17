@@ -19,9 +19,16 @@ from pipeline_job import (  # noqa: E402
 	resolve_skip_caiman,
 	run_timing_path,
 	validate_job,
+	sort_folders_by_mtime,
+	want_unregistered_h5,
 	write_run_timing,
 )
-from pipeline_launcher import build_immediate_job, build_job, build_scheduled_job  # noqa: E402
+from pipeline_launcher import (  # noqa: E402
+	build_immediate_job,
+	build_job,
+	build_scheduled_job,
+	glibc_tunables_for_caiman,
+)
 
 
 class TestApplySkipCaiman(unittest.TestCase):
@@ -44,6 +51,37 @@ class TestResolveSkipCaiman(unittest.TestCase):
 
 	def test_job_true_without_cli(self):
 		self.assertTrue(resolve_skip_caiman(True, cli_skip_caiman=False))
+
+
+class TestSortFoldersByMtime(unittest.TestCase):
+	def test_newest_first(self):
+		with tempfile.TemporaryDirectory() as tmp:
+			old = os.path.join(tmp, 'old_session')
+			new = os.path.join(tmp, 'new_session')
+			os.makedirs(old)
+			os.makedirs(new)
+			os.utime(old, (1_000_000, 1_000_000))
+			os.utime(new, (2_000_000, 2_000_000))
+			self.assertEqual(sort_folders_by_mtime([old, new]), [new, old])
+
+	def test_missing_path_sorts_last(self):
+		with tempfile.TemporaryDirectory() as tmp:
+			exists = os.path.join(tmp, 'exists')
+			os.makedirs(exists)
+			missing = os.path.join(tmp, 'gone')
+			self.assertEqual(sort_folders_by_mtime([missing, exists]), [exists, missing])
+
+
+class TestWantUnregisteredH5(unittest.TestCase):
+	def test_default_mc_does_not_write(self):
+		# GUI default: TIFs→H5 off, First Rigid on.
+		self.assertFalse(want_unregistered_h5([False, True, False, False]))
+
+	def test_both_checked_does_not_write(self):
+		self.assertFalse(want_unregistered_h5([True, True, False, False]))
+
+	def test_requested_without_motion(self):
+		self.assertTrue(want_unregistered_h5([True, False, False, False]))
 
 
 class TestFoldersMissingRegisteredH5(unittest.TestCase):
@@ -149,6 +187,23 @@ class TestBatchJobValidation(unittest.TestCase):
 			path = batch_log_path(tmp, 'test-batch')
 			self.assertTrue(path.endswith('batch_test-batch.log'))
 			self.assertTrue(os.path.isdir(os.path.join(tmp, 'logs')))
+
+
+class TestGlibcTunablesForCaiman(unittest.TestCase):
+	def test_default_forces_execstack(self):
+		self.assertEqual(glibc_tunables_for_caiman(''), 'glibc.rtld.execstack=2')
+
+	def test_appends_when_other_tunables_present(self):
+		self.assertEqual(
+			glibc_tunables_for_caiman('glibc.malloc.check=3'),
+			'glibc.malloc.check=3:glibc.rtld.execstack=2',
+		)
+
+	def test_leaves_existing_execstack_alone(self):
+		self.assertEqual(
+			glibc_tunables_for_caiman('glibc.rtld.execstack=0'),
+			'glibc.rtld.execstack=0',
+		)
 
 
 if __name__ == '__main__':

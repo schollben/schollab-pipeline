@@ -94,6 +94,18 @@ _active_unit() {
 	fi
 }
 
+# TensorFlow in the caiman env requests an executable stack. glibc 2.41+
+# refuses that at dlopen unless this tunable is set when Python starts.
+# systemd-run does not inherit the GUI shell unless the launcher --setenv's it.
+_ensure_glibc_tf_tunable() {
+	local needle="glibc.rtld.execstack="
+	if [ -z "${GLIBC_TUNABLES:-}" ]; then
+		export GLIBC_TUNABLES="glibc.rtld.execstack=2"
+	elif [[ "$GLIBC_TUNABLES" != *"$needle"* ]]; then
+		export GLIBC_TUNABLES="${GLIBC_TUNABLES}:glibc.rtld.execstack=2"
+	fi
+}
+
 # Human-readable duration from seconds (float ok).
 _format_duration() {
 	python3 -c "s=float('${1:-0}'); h=int(s//3600); m=int((s%3600)//60); sec=s%60; print(f'{h}h {m}m {sec:.0f}s' if h else f'{m}m {sec:.0f}s')"
@@ -254,6 +266,7 @@ _clean_run_unsafe_registered_check() {
 			tif_count=$(find "$folder" -maxdepth 1 -type f \
 				-name "*.tif" \
 				! -name "*_rigid.tif" ! -name "*_nonrigid.tif" \
+				! -name "std_projection.tif" \
 				2>/dev/null | grep -v References | wc -l)
 			if [ "$tif_count" -eq 0 ]; then
 				UNSAFE_FOLDERS+=("$folder")
@@ -266,7 +279,7 @@ _clean_run_unsafe_registered_check() {
 	fi
 	echo ""
 	echo "WARNING: The following folders have registered.h5 but NO acquisition source TIFs"
-	echo "  (previews *_rigid.tif / *_nonrigid.tif do not count)."
+	echo "  (previews *_rigid.tif / *_nonrigid.tif and std_projection.tif do not count)."
 	echo "  Deleting registered.h5 here is PERMANENT."
 	echo ""
 	local f
@@ -298,7 +311,8 @@ _clean_collect_caiman_paths() {
 			"$folder/registered.h5" \
 			"$folder/rigid_shifts.csv" \
 			"$folder/nonrigid_x_shifts.csv" \
-			"$folder/nonrigid_y_shifts.csv"
+			"$folder/nonrigid_y_shifts.csv" \
+			"$folder/std_projection.tif"
 		do
 			[ -e "$p" ] && out+="$p"$'\n'
 		done
@@ -723,6 +737,8 @@ echo "  Repo:          $REPO_DIR"
 echo ""
 echo "Opening folder selection GUI..."
 echo ""
+
+_ensure_glibc_tf_tunable
 
 # Blocks until user clicks Run; registration.py writes job JSON + launches systemd service
 "$CAIMAN_PYTHON" "$REGISTRATION_SCRIPT"

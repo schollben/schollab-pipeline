@@ -5,7 +5,7 @@ import numpy as np
 import wx
 import wx.lib.agw.multidirdialog as MDD
 
-from pipeline_job import folders_missing_registered_h5
+from pipeline_job import folders_missing_registered_h5, sort_folders_by_mtime
 
 
 class DirectorySelection:
@@ -87,8 +87,8 @@ class CheckListFrame(wx.Frame):
             )
             for col in range(self.check_cols):
                 checkbox = wx.CheckBox(self.panel)
-                # Default TIFs->.H5 + First Rigid for full pipeline runs.
-                if col in (0, 1):
+                # First Rigid on. TIFs→H5 off: MC reads TIFFs; unregistered.h5 is opt-in.
+                if col == 1:
                     checkbox.SetValue(True)
                 self.checkboxes[col].append(checkbox)
                 grid_sizer.Add(checkbox, pos=(row, col + 1), flag=wx.ALL | wx.ALIGN_CENTER, border=5)
@@ -150,10 +150,9 @@ class CheckListFrame(wx.Frame):
                 for checkbox in column_checkboxes:
                     checkbox.SetValue(False)
         else:
-            # Restore full-pipeline defaults when re-enabling CaImAn columns.
-            for col in (0, 1):
-                for checkbox in self.checkboxes[col]:
-                    checkbox.SetValue(True)
+            # Restore First Rigid only — TIFs→H5 stays off (unregistered.h5 is opt-in).
+            for checkbox in self.checkboxes[1]:
+                checkbox.SetValue(True)
 
     def _set_caiman_controls_enabled(self, enabled):
         for widget in self.caiman_header_labels:
@@ -255,6 +254,7 @@ def get_registration_options():
     checklist_labels = ["TIFs->.H5", "First Rigid", "Addl. Rigid", "NoRMCorre"]
     if not paths:
         return None
+    paths = sort_folders_by_mtime(paths)
 
     app = wx.App()
     frame = CheckListFrame(paths, checklist_labels)

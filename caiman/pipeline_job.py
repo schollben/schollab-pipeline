@@ -216,6 +216,32 @@ def try_acquire_batch_lock(batch_id, unit_name, pid):
 	return True
 
 
+def sort_folders_by_mtime(paths, newest_first=True):
+	"""
+	Order session folders by directory mtime.
+
+	Newest first so recent recordings sit at the top of the GUI checklist
+	and run first in the batch. Unreadable paths sort last.
+	"""
+	def mtime(path):
+		try:
+			return os.path.getmtime(path)
+		except OSError:
+			return 0.0
+
+	return sorted(paths, key=mtime, reverse=newest_first)
+
+
+def want_unregistered_h5(row):
+	"""
+	Write unregistered.h5 only when TIFs→H5 is requested and no motion step is on.
+
+	Motion correction reads acquisition TIFFs and never writes this file.
+	Default GUI leaves TIFs→H5 unchecked, so this is false unless requested.
+	"""
+	return bool(row[0]) and not any(row[1:4])
+
+
 def apply_skip_caiman(process_selections, skip_caiman):
 	"""
 	When skip_caiman is set, force all CaImAn step flags off regardless of GUI state.

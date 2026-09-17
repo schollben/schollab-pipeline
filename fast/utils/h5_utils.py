@@ -67,11 +67,18 @@ def _acquisition_tif_paths(sorted_paths):
     out = []
     for f in sorted_paths:
         b = os.path.basename(f)
-        if b.endswith('_rigid.tif') or b.endswith('_nonrigid.tif'):
+        # Keep aligned with caiman/std_projection.is_pipeline_artifact_tif
+        # (FAST env cannot import caiman/).
+        if (
+            b.endswith('_rigid.tif')
+            or b.endswith('_nonrigid.tif')
+            or b == 'std_projection.tif'
+        ):
             continue
         out.append(f)
     assert len(out) > 0, (
-        "No acquisition TIFFs left after excluding *_rigid.tif / *_nonrigid.tif — "
+        "No acquisition TIFFs left after excluding CaImAn artifacts "
+        "(*_rigid.tif, *_nonrigid.tif, std_projection.tif) — "
         "folder may contain only CaImAn sample exports."
     )
     tseries = [f for f in out if os.path.basename(f).startswith('TSeries_')]
@@ -239,13 +246,14 @@ def tif_stacks_to_h5(tif_dir, h5_savename, h5_key='mov', delete_tiffs=False, fra
         f_out[h5_key][0:offset, :, :] = np.flip(first_frames, axis=0)
         write_end_ind += offset
 
-    for i in tqdm(range(len(tif_fnames) - 1), desc="Writing all but last stack...", ncols=75):
+    # Full-length stacks first; the last file is often shorter and is written below.
+    for i in tqdm(range(len(tif_fnames) - 1), desc="Writing TIFF stacks", ncols=75):
         this_stack_data = tifffile.imread(tif_fnames[i], is_ome=False)
         write_start_ind = write_end_ind
         write_end_ind = write_start_ind + stack_depth
         f_out[h5_key][write_start_ind:write_end_ind, :, :] = this_stack_data
 
-    # Write the last stack
+    # Last stack is included — handled separately only because its length may differ.
     last_stack = tifffile.imread(tif_fnames[-1], is_ome=False)
     write_start_ind = write_end_ind
 
