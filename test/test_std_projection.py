@@ -75,36 +75,23 @@ class TestStdProjectionStack(unittest.TestCase):
 		self.assertIsNone(write_std_projection_tiff('/tmp', []))
 		self.assertIsNone(write_std_projection_tiff('/tmp', np.empty((0, 2, 2))))
 
-	def test_write_emits_one_stack_via_tiffwriter(self):
-		# Writer path: one file, one page per complete 1000-frame window.
+	def test_write_emits_plain_stack_without_ome(self):
+		# One file, one page per window, no OME-XML (Fiji would open that twice).
 		frames = np.stack([
 			np.ones((2, 2), dtype=np.float32),
 			np.zeros((2, 2), dtype=np.float32),
 		])
-		written = []
-
-		class FakeWriter:
-			def __init__(self, *args, **kwargs):
-				pass
-
-			def __enter__(self):
-				return self
-
-			def __exit__(self, *exc):
-				return False
-
-			def write(self, frame, contiguous=False):
-				written.append(np.array(frame))
-
 		fake_tifffile = mock.MagicMock()
-		fake_tifffile.TiffWriter = FakeWriter
 		with mock.patch.dict(sys.modules, {'tifffile': fake_tifffile}):
 			with tempfile.TemporaryDirectory() as tmp:
 				path = write_std_projection_tiff(tmp, frames)
 				self.assertEqual(path, os.path.join(tmp, STD_TIFF_NAME))
-		self.assertEqual(len(written), 2)
-		np.testing.assert_array_equal(written[0], frames[0])
-		np.testing.assert_array_equal(written[1], frames[1])
+		fake_tifffile.imwrite.assert_called_once()
+		args, kwargs = fake_tifffile.imwrite.call_args
+		self.assertEqual(args[0], path)
+		np.testing.assert_array_equal(args[1], frames)
+		self.assertEqual(kwargs.get('ome'), False)
+		self.assertIsNone(kwargs.get('metadata'))
 
 
 if __name__ == '__main__':

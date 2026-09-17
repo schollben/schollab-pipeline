@@ -67,16 +67,22 @@ def write_std_projection_tiff(parent_dir, std_frames, tiff_name=STD_TIFF_NAME):
 		)
 		return None
 	import tifffile
-	from tiff_compat import tiff_writer_append
 	path = os.path.join(parent_dir, tiff_name)
 	print(
 		f"  Writing STD projection TIFF: {path} "
 		f"({len(std_frames)} frames, window={STD_WINDOW})"
 	)
-	with tifffile.TiffWriter(path, bigtiff=False, imagej=False) as tif:
-		for frame in std_frames:
-			tiff_writer_append(
-				tif, np.asarray(frame, dtype=np.float32), contiguous=False
-			)
+	_imwrite_plain_stack(tifffile, path, np.asarray(std_frames, dtype=np.float32))
 	print(f"  Wrote STD projection TIFF: {path}")
 	return path
+
+
+def _imwrite_plain_stack(tifffile, path, stack):
+	# ome=False: this is a preview stack, not a Bruker series. OME-XML in
+	# ImageDescription makes Fiji File>Open run ImageJ's TIFF reader and
+	# Bio-Formats on the same pixels, so the stack appears twice.
+	kwargs = dict(photometric='minisblack', imagej=False, metadata=None)
+	try:
+		tifffile.imwrite(path, stack, ome=False, **kwargs)
+	except TypeError:
+		tifffile.imwrite(path, stack, **kwargs)
