@@ -1,31 +1,32 @@
 """
-Standard-deviation projection TIFF after motion correction.
+STD / average projection TIFFs after motion correction.
 
-Why: operators want a compact movie of activity (STD over time) without
-opening the full registered stack. Each output frame is the STD of 1000
-motion-corrected frames. This file is a CaImAn artifact, not acquisition data.
+Why: operators want compact movies of activity (STD) and mean intensity
+without opening the full registered stack. Each output frame is one
+1000-frame window. These files are CaImAn artifacts, not acquisition data.
 
 Never call this unless motion correction actually ran — TIFs→H5-only and
-skip_caiman must not produce std_projection.tif.
+skip_caiman must not produce std_projection.tif or avg_projection.tif.
 """
 import os
 import numpy as np
 
-# Window matches the existing registered.h5 rewrite chunk so STD can be
-# computed from frames already in RAM (no second pass over the mmap).
+# Window matches the existing registered.h5 rewrite chunk so projections can
+# be computed from frames already in RAM (no second pass over the mmap).
 STD_WINDOW = 1000
 STD_TIFF_NAME = 'std_projection.tif'
+AVG_TIFF_NAME = 'avg_projection.tif'
 
 
 def is_pipeline_artifact_tif(path_or_name):
 	"""
-	True for CaImAn preview / STD TIFFs that must not be treated as source data.
+	True for CaImAn preview / projection TIFFs that must not be source data.
 
-	Why: std_projection.tif and 01_rigid.tif would otherwise be picked up by
-	TIFs→H5 and by the 'has source TIFFs?' clean-safety check.
+	Why: std/avg_projection.tif and 01_rigid.tif would otherwise be picked up
+	by TIFs→H5 and by the 'has source TIFFs?' clean-safety check.
 	"""
 	name = os.path.basename(path_or_name)
-	if name == STD_TIFF_NAME:
+	if name in (STD_TIFF_NAME, AVG_TIFF_NAME):
 		return True
 	return name.endswith('_rigid.tif') or name.endswith('_nonrigid.tif')
 
@@ -33,6 +34,11 @@ def is_pipeline_artifact_tif(path_or_name):
 def std_of_window(chunk):
 	"""STD projection of one (T, Y, X) window → (Y, X) float32."""
 	return np.std(np.asarray(chunk, dtype=np.float64), axis=0).astype(np.float32)
+
+
+def avg_of_window(chunk):
+	"""Mean projection of one (T, Y, X) window → (Y, X) float32."""
+	return np.mean(np.asarray(chunk, dtype=np.float64), axis=0).astype(np.float32)
 
 
 def std_projection_stack(movie, window=STD_WINDOW):
@@ -55,25 +61,33 @@ def std_projection_stack(movie, window=STD_WINDOW):
 
 
 def write_std_projection_tiff(parent_dir, std_frames, tiff_name=STD_TIFF_NAME):
+	return _write_projection_tiff(parent_dir, std_frames, tiff_name, 'STD')
+
+
+def write_avg_projection_tiff(parent_dir, avg_frames, tiff_name=AVG_TIFF_NAME):
+	return _write_projection_tiff(parent_dir, avg_frames, tiff_name, 'AVG')
+
+
+def _write_projection_tiff(parent_dir, frames, tiff_name, label):
 	"""
 	Write one TIFF stack next to other session artifacts (registered.h5, …).
 
 	Returns the output path, or None when there are no complete windows.
 	"""
-	if std_frames is None or len(std_frames) == 0:
+	if frames is None or len(frames) == 0:
 		print(
-			f"  STD projection TIFF skipped — fewer than {STD_WINDOW} "
+			f"  {label} projection TIFF skipped — fewer than {STD_WINDOW} "
 			"motion-corrected frames."
 		)
 		return None
 	import tifffile
 	path = os.path.join(parent_dir, tiff_name)
 	print(
-		f"  Writing STD projection TIFF: {path} "
-		f"({len(std_frames)} frames, window={STD_WINDOW})"
+		f"  Writing {label} projection TIFF: {path} "
+		f"({len(frames)} frames, window={STD_WINDOW})"
 	)
-	_imwrite_plain_stack(tifffile, path, np.asarray(std_frames, dtype=np.float32))
-	print(f"  Wrote STD projection TIFF: {path}")
+	_imwrite_plain_stack(tifffile, path, np.asarray(frames, dtype=np.float32))
+	print(f"  Wrote {label} projection TIFF: {path}")
 	return path
 
 

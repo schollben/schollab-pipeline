@@ -40,6 +40,7 @@ class TestListAcquisitionTiffs(unittest.TestCase):
 			_touch(tmp, 'TSeries_001_Ch1_stack.tif')
 			_touch(tmp, '01_rigid.tif')
 			_touch(tmp, 'std_projection.tif')
+			_touch(tmp, 'avg_projection.tif')
 			got = list_acquisition_tiffs(tmp)
 			self.assertEqual(got, [ch2])
 

@@ -15,11 +15,14 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_REPO_ROOT, 'caiman'))
 
 from std_projection import (  # noqa: E402
+	AVG_TIFF_NAME,
 	STD_TIFF_NAME,
 	STD_WINDOW,
+	avg_of_window,
 	is_pipeline_artifact_tif,
 	std_of_window,
 	std_projection_stack,
+	write_avg_projection_tiff,
 	write_std_projection_tiff,
 )
 
@@ -28,6 +31,8 @@ class TestArtifactTifFilter(unittest.TestCase):
 	def test_excludes_std_and_sample_previews(self):
 		self.assertTrue(is_pipeline_artifact_tif('std_projection.tif'))
 		self.assertTrue(is_pipeline_artifact_tif('/data/session/std_projection.tif'))
+		self.assertTrue(is_pipeline_artifact_tif('avg_projection.tif'))
+		self.assertTrue(is_pipeline_artifact_tif('/data/session/avg_projection.tif'))
 		self.assertTrue(is_pipeline_artifact_tif('01_rigid.tif'))
 		self.assertTrue(is_pipeline_artifact_tif('02_nonrigid.tif'))
 
@@ -41,6 +46,7 @@ class TestStdProjectionStack(unittest.TestCase):
 	def test_window_constant_is_1000(self):
 		self.assertEqual(STD_WINDOW, 1000)
 		self.assertEqual(STD_TIFF_NAME, 'std_projection.tif')
+		self.assertEqual(AVG_TIFF_NAME, 'avg_projection.tif')
 
 	def test_complete_windows_only_drop_remainder(self):
 		# 2500 frames → two STD pages; last 500 frames are not a full window.
@@ -70,13 +76,27 @@ class TestStdProjectionStack(unittest.TestCase):
 		want = np.std(chunk.astype(np.float64), axis=0).astype(np.float32)
 		np.testing.assert_allclose(got, want)
 
+	def test_avg_of_window_matches_numpy(self):
+		chunk = np.array([[[0.0, 1.0]], [[2.0, 3.0]], [[4.0, 5.0]]])
+		got = avg_of_window(chunk)
+		want = np.mean(chunk.astype(np.float64), axis=0).astype(np.float32)
+		np.testing.assert_allclose(got, want)
+
 	def test_write_skipped_when_no_frames(self):
 		# Do not create an empty TIFF when motion-corrected length < 1000.
 		self.assertIsNone(write_std_projection_tiff('/tmp', []))
 		self.assertIsNone(write_std_projection_tiff('/tmp', np.empty((0, 2, 2))))
+		self.assertIsNone(write_avg_projection_tiff('/tmp', []))
+		self.assertIsNone(write_avg_projection_tiff('/tmp', np.empty((0, 2, 2))))
 
 	def test_write_emits_plain_stack_without_ome(self):
 		# One file, one page per window, no OME-XML (Fiji would open that twice).
+		self._assert_plain_write(write_std_projection_tiff, STD_TIFF_NAME)
+
+	def test_write_avg_emits_plain_stack_without_ome(self):
+		self._assert_plain_write(write_avg_projection_tiff, AVG_TIFF_NAME)
+
+	def _assert_plain_write(self, writer, tiff_name):
 		frames = np.stack([
 			np.ones((2, 2), dtype=np.float32),
 			np.zeros((2, 2), dtype=np.float32),
@@ -84,8 +104,8 @@ class TestStdProjectionStack(unittest.TestCase):
 		fake_tifffile = mock.MagicMock()
 		with mock.patch.dict(sys.modules, {'tifffile': fake_tifffile}):
 			with tempfile.TemporaryDirectory() as tmp:
-				path = write_std_projection_tiff(tmp, frames)
-				self.assertEqual(path, os.path.join(tmp, STD_TIFF_NAME))
+				path = writer(tmp, frames)
+				self.assertEqual(path, os.path.join(tmp, tiff_name))
 		fake_tifffile.imwrite.assert_called_once()
 		args, kwargs = fake_tifffile.imwrite.call_args
 		self.assertEqual(args[0], path)

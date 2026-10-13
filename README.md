@@ -12,7 +12,7 @@ PreProcess2PImages/
 │   ├── config.json          CaImAn runtime settings
 │   ├── tif_to_h5.py         TIF stack → HDF5 conversion
 │   ├── h5_to_tif.py         HDF5 → TIF utility
-│   └── std_projection.py    STD TIFF: one projection per 1000 MC frames
+│   └── std_projection.py    STD/AVG TIFFs: one projection per 1000 MC frames
 ├── fast/                    FAST denoising
 │   ├── denoising.py         Entry point: reads config.json
 │   ├── config.json          Data folders + hyperparameters
@@ -247,7 +247,7 @@ Each mode **scans disk first**, prints a **single manifest** of paths that exist
 
 | Mode | Removes (per folder, when present) | Does **not** remove |
 |------|-------------------------------------|---------------------|
-| **clean_caiman** | `unregistered.h5`, `registered.h5`, rigid/nonrigid shift CSVs, `*_rigid.tif` / `*_nonrigid.tif`, `std_projection.tif` | Raw acquisition TIFFs (`TSeries_*`, `file_*`, …) |
+| **clean_caiman** | `unregistered.h5`, `registered.h5`, rigid/nonrigid shift CSVs, `*_rigid.tif` / `*_nonrigid.tif`, `std_projection.tif`, `avg_projection.tif` | Raw acquisition TIFFs (`TSeries_*`, `file_*`, …) |
 | **clean_fast** | `checkpoint/`, `inference.h5`, `_fast_complete`, `_run_config.json`, `_inference_config.json`, example `*_registered_*.tif`, scratch subdir named like the session folder, shared FAST log files under `fast/logs/` | Raw TIFFs / CaImAn H5s |
 | **clean_all** | Union of the above (one manifest) | Same |
 
@@ -283,17 +283,17 @@ The pipeline runs as a systemd user service — it survives display/GDM crashes.
 ## Per-folder flow
 
 For each selected folder:
-1. CaImAn: acquisition TIFFs → motion correction → `registered.h5` (+ `std_projection.tif` when a motion step ran). `unregistered.h5` is **not** written unless **TIFs→H5** is checked with no motion step.
+1. CaImAn: acquisition TIFFs → motion correction → `registered.h5` (+ `std_projection.tif` / `avg_projection.tif` when a motion step ran). `unregistered.h5` is **not** written unless **TIFs→H5** is checked with no motion step.
 2. FAST: reads `registered.h5` → trains U-Net → inference → `inference.h5` + `_fast_complete`
 
-### STD projection TIFF (additive)
+### STD / AVG projection TIFFs (additive)
 
-After motion correction writes `registered.h5` and the sample TIFF, CaImAn also writes **`std_projection.tif`** in the same session folder:
+After motion correction writes `registered.h5` and the sample TIFF, CaImAn also writes **`std_projection.tif`** and **`avg_projection.tif`** in the same session folder:
 
-- One TIFF page per **1000** motion-corrected frames (standard-deviation projection).
-- A leftover shorter than 1000 frames is **omitted from this TIFF only**. Those frames stay in `registered.h5`.
+- One TIFF page per **1000** motion-corrected frames (standard-deviation and mean projections).
+- A leftover shorter than 1000 frames is **omitted from these TIFFs only**. Those frames stay in `registered.h5`.
 - **Not written** if motion correction is skipped (`skip_caiman`, TIFs→H5 only, or a failed MC step).
-- `--clean_caiman` removes it. It is not treated as an acquisition TIFF.
+- `--clean_caiman` removes them. They are not treated as acquisition TIFFs.
 
 When **TIFs→H5** is requested with no motion step, every stack is written into `unregistered.h5`, including a shorter last OME TIFF (the tqdm bar used to say “all but last stack”; that was the full-length files first, then the last file). Motion correction reads TIFFs directly and does not create `unregistered.h5`.
 
