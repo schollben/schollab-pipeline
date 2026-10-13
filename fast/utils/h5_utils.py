@@ -73,12 +73,13 @@ def _acquisition_tif_paths(sorted_paths):
             b.endswith('_rigid.tif')
             or b.endswith('_nonrigid.tif')
             or b == 'std_projection.tif'
+            or b == 'avg_projection.tif'
         ):
             continue
         out.append(f)
     assert len(out) > 0, (
         "No acquisition TIFFs left after excluding CaImAn artifacts "
-        "(*_rigid.tif, *_nonrigid.tif, std_projection.tif) — "
+        "(*_rigid.tif, *_nonrigid.tif, std_projection.tif, avg_projection.tif) — "
         "folder may contain only CaImAn sample exports."
     )
     tseries = [f for f in out if os.path.basename(f).startswith('TSeries_')]

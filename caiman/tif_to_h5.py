@@ -33,9 +33,9 @@ def _acquisition_tif_paths(sorted_paths):
     """
     Select TIFFs that belong to the recording, not CaImAn preview exports.
 
-    Why: sample movies (01_rigid.tif, …) and std_projection.tif sort before
-    ScanImage stacks (file_* / TSeries_*) and break depth checks. Prefer one
-    homogeneous naming series.
+    Why: sample movies (01_rigid.tif, …) and std/avg_projection.tif sort
+    before ScanImage stacks (file_* / TSeries_*) and break depth checks.
+    Prefer one homogeneous naming series.
     """
     out = []
     for f in sorted_paths:
@@ -44,7 +44,7 @@ def _acquisition_tif_paths(sorted_paths):
         out.append(f)
     assert len(out) > 0, (
         "No acquisition TIFFs left after excluding CaImAn artifacts "
-        "(*_rigid.tif, *_nonrigid.tif, std_projection.tif) — "
+        "(*_rigid.tif, *_nonrigid.tif, std_projection.tif, avg_projection.tif) — "
         "folder may contain only CaImAn sample exports."
     )
     tseries = [f for f in out if os.path.basename(f).startswith('TSeries_')]

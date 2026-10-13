@@ -267,6 +267,7 @@ _clean_run_unsafe_registered_check() {
 				-name "*.tif" \
 				! -name "*_rigid.tif" ! -name "*_nonrigid.tif" \
 				! -name "std_projection.tif" \
+				! -name "avg_projection.tif" \
 				2>/dev/null | grep -v References | wc -l)
 			if [ "$tif_count" -eq 0 ]; then
 				UNSAFE_FOLDERS+=("$folder")
@@ -279,7 +280,7 @@ _clean_run_unsafe_registered_check() {
 	fi
 	echo ""
 	echo "WARNING: The following folders have registered.h5 but NO acquisition source TIFs"
-	echo "  (previews *_rigid.tif / *_nonrigid.tif and std_projection.tif do not count)."
+	echo "  (previews *_rigid.tif / *_nonrigid.tif, std_projection.tif, avg_projection.tif do not count)."
 	echo "  Deleting registered.h5 here is PERMANENT."
 	echo ""
 	local f
@@ -312,7 +313,8 @@ _clean_collect_caiman_paths() {
 			"$folder/rigid_shifts.csv" \
 			"$folder/nonrigid_x_shifts.csv" \
 			"$folder/nonrigid_y_shifts.csv" \
-			"$folder/std_projection.tif"
+			"$folder/std_projection.tif" \
+			"$folder/avg_projection.tif"
 		do
 			[ -e "$p" ] && out+="$p"$'\n'
 		done

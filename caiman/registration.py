@@ -70,9 +70,12 @@ from tif_to_h5 import (
 )
 from tiff_compat import tiff_writer_append
 from std_projection import (
+	AVG_TIFF_NAME,
 	STD_TIFF_NAME,
 	STD_WINDOW,
+	avg_of_window,
 	std_of_window,
+	write_avg_projection_tiff,
 	write_std_projection_tiff,
 )
 
@@ -174,43 +177,50 @@ def _save_motion_outputs(parent_dir, mc, mc_dict):
 
 def _try_write_std_projection(parent_dir, datafile, numframes):
 	"""
-	Write std_projection.tif after registered.h5 / sample TIFF already exist.
+	Write std/avg_projection.tif after registered.h5 / sample TIFF exist.
 
-	Why best-effort: STD is additive. A write failure must not skip 01_rigid.tif
-	or mark motion correction failed.
+	Why best-effort: projections are additive. A write failure must not skip
+	01_rigid.tif or mark motion correction failed.
 	"""
 	try:
-		n_full = numframes // STD_WINDOW
-		remainder = numframes % STD_WINDOW
-		std_frames = []
-		n_zero = 0
-		for i in range(n_full):
-			start = i * STD_WINDOW
-			chunk = np.array(datafile["mov"][start:start + STD_WINDOW, :, :])
-			proj = std_of_window(chunk)
-			# Zero windows mean the H5 was padded; do not emit black STD pages.
-			if not np.any(proj):
-				n_zero += 1
-				continue
-			std_frames.append(proj)
-		if n_zero:
-			print(
-				f"  STD projection: skipped {n_zero} all-zero "
-				f"{STD_WINDOW}-frame window(s)"
-			)
-		# Remainder is already in registered.h5 from the original rewrite loop.
-		if remainder:
-			print(
-				f"  STD projection: {n_full} complete {STD_WINDOW}-frame windows; "
-				f"{remainder} leftover frames remain in registered.h5 "
-				"(not omitted from motion correction)."
-			)
+		std_frames, avg_frames = _projection_frames(datafile, numframes)
 		write_std_projection_tiff(parent_dir, std_frames)
+		write_avg_projection_tiff(parent_dir, avg_frames)
 	except Exception as exc:
 		print(
-			f"  WARNING: STD projection TIFF failed; "
+			f"  WARNING: projection TIFFs failed; "
 			f"registered.h5 and sample TIFF kept: {exc}"
 		)
+
+
+def _projection_frames(datafile, numframes):
+	# One H5 pass for STD and AVG. Skip all-zero chunks (padded H5), not
+	# zero-STD windows — a flat non-zero mean is still a valid AVG page.
+	n_full = numframes // STD_WINDOW
+	remainder = numframes % STD_WINDOW
+	std_frames = []
+	avg_frames = []
+	n_zero = 0
+	for i in range(n_full):
+		start = i * STD_WINDOW
+		chunk = np.array(datafile["mov"][start:start + STD_WINDOW, :, :])
+		if not np.any(chunk):
+			n_zero += 1
+			continue
+		std_frames.append(std_of_window(chunk))
+		avg_frames.append(avg_of_window(chunk))
+	if n_zero:
+		print(
+			f"  Projection TIFFs: skipped {n_zero} all-zero "
+			f"{STD_WINDOW}-frame window(s)"
+		)
+	if remainder:
+		print(
+			f"  Projection TIFFs: {n_full} complete {STD_WINDOW}-frame windows; "
+			f"{remainder} leftover frames remain in registered.h5 "
+			"(not omitted from motion correction)."
+		)
+	return std_frames, avg_frames
 
 
 def _as_path_list(paths):
@@ -393,14 +403,14 @@ def _h5_artifact_line(folder, filename):
 
 
 def _sample_tif_artifacts(folder):
-	"""List rigid/nonrigid sample TIFFs and STD projection from motion correction."""
+	"""List rigid/nonrigid sample TIFFs and STD/AVG projections from MC."""
 	arts = []
 	for pattern in ('*_rigid.tif', '*_nonrigid.tif'):
 		for path in sorted(glob.glob(os.path.join(folder, pattern))):
 			arts.append(os.path.basename(path))
-	std_path = os.path.join(folder, STD_TIFF_NAME)
-	if os.path.isfile(std_path):
-		arts.append(STD_TIFF_NAME)
+	for name in (STD_TIFF_NAME, AVG_TIFF_NAME):
+		if os.path.isfile(os.path.join(folder, name)):
+			arts.append(name)
 	return arts
 
 
