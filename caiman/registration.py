@@ -72,9 +72,7 @@ from tiff_compat import tiff_writer_append
 from std_projection import (
 	AVG_TIFF_NAME,
 	STD_TIFF_NAME,
-	STD_WINDOW,
-	avg_of_window,
-	std_of_window,
+	projection_frames,
 	write_avg_projection_tiff,
 	write_std_projection_tiff,
 )
@@ -183,7 +181,9 @@ def _try_write_std_projection(parent_dir, datafile, numframes):
 	01_rigid.tif or mark motion correction failed.
 	"""
 	try:
-		std_frames, avg_frames = _projection_frames(datafile, numframes)
+		# Loop lives in std_projection so regen_projections.py shares it
+		# without importing CaImAn.
+		std_frames, avg_frames = projection_frames(datafile["mov"], numframes)
 		write_std_projection_tiff(parent_dir, std_frames)
 		write_avg_projection_tiff(parent_dir, avg_frames)
 	except Exception as exc:
@@ -191,36 +191,6 @@ def _try_write_std_projection(parent_dir, datafile, numframes):
 			f"  WARNING: projection TIFFs failed; "
 			f"registered.h5 and sample TIFF kept: {exc}"
 		)
-
-
-def _projection_frames(datafile, numframes):
-	# One H5 pass for STD and AVG. Skip all-zero chunks (padded H5), not
-	# zero-STD windows — a flat non-zero mean is still a valid AVG page.
-	n_full = numframes // STD_WINDOW
-	remainder = numframes % STD_WINDOW
-	std_frames = []
-	avg_frames = []
-	n_zero = 0
-	for i in range(n_full):
-		start = i * STD_WINDOW
-		chunk = np.array(datafile["mov"][start:start + STD_WINDOW, :, :])
-		if not np.any(chunk):
-			n_zero += 1
-			continue
-		std_frames.append(std_of_window(chunk))
-		avg_frames.append(avg_of_window(chunk))
-	if n_zero:
-		print(
-			f"  Projection TIFFs: skipped {n_zero} all-zero "
-			f"{STD_WINDOW}-frame window(s)"
-		)
-	if remainder:
-		print(
-			f"  Projection TIFFs: {n_full} complete {STD_WINDOW}-frame windows; "
-			f"{remainder} leftover frames remain in registered.h5 "
-			"(not omitted from motion correction)."
-		)
-	return std_frames, avg_frames
 
 
 def _as_path_list(paths):

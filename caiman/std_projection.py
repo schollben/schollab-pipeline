@@ -60,6 +60,42 @@ def std_projection_stack(movie, window=STD_WINDOW):
 	return out
 
 
+def projection_frames(mov, numframes):
+	"""
+	STD and AVG pages from the first `numframes` of a (T, Y, X) array-like.
+
+	`mov` is usually registered.h5["mov"]; reading one window at a time keeps
+	RAM at ~1000 frames instead of the whole movie.
+	"""
+	# One pass for STD and AVG. Skip all-zero chunks (padded H5), not
+	# zero-STD windows — a flat non-zero mean is still a valid AVG page.
+	n_full = numframes // STD_WINDOW
+	remainder = numframes % STD_WINDOW
+	std_frames = []
+	avg_frames = []
+	n_zero = 0
+	for i in range(n_full):
+		start = i * STD_WINDOW
+		chunk = np.array(mov[start:start + STD_WINDOW, :, :])
+		if not np.any(chunk):
+			n_zero += 1
+			continue
+		std_frames.append(std_of_window(chunk))
+		avg_frames.append(avg_of_window(chunk))
+	if n_zero:
+		print(
+			f"  Projection TIFFs: skipped {n_zero} all-zero "
+			f"{STD_WINDOW}-frame window(s)"
+		)
+	if remainder:
+		print(
+			f"  Projection TIFFs: {n_full} complete {STD_WINDOW}-frame windows; "
+			f"{remainder} leftover frames remain in registered.h5 "
+			"(not omitted from motion correction)."
+		)
+	return std_frames, avg_frames
+
+
 def write_std_projection_tiff(parent_dir, std_frames, tiff_name=STD_TIFF_NAME):
 	return _write_projection_tiff(parent_dir, std_frames, tiff_name, 'STD')
 

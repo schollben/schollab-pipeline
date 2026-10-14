@@ -295,6 +295,14 @@ After motion correction writes `registered.h5` and the sample TIFF, CaImAn also 
 - **Not written** if motion correction is skipped (`skip_caiman`, TIFs→H5 only, or a failed MC step).
 - `--clean_caiman` removes them. They are not treated as acquisition TIFFs.
 
+**Older sessions without these files:** rebuild them from the existing `registered.h5` (no motion correction rerun):
+
+```bash
+"$HOME/anaconda3/envs/caiman/bin/python" caiman/regen_projections.py /path/to/session [more sessions...]
+```
+
+Folders that already have both TIFFs are skipped; add `--force` to overwrite. Exit code is 1 if any folder has no `registered.h5` or fewer than 1000 frames.
+
 When **TIFs→H5** is requested with no motion step, every stack is written into `unregistered.h5`, including a shorter last OME TIFF (the tqdm bar used to say “all but last stack”; that was the full-length files first, then the last file). Motion correction reads TIFFs directly and does not create `unregistered.h5`.
 
 ## Why folders are skipped (and when)
